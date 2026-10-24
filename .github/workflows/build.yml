@@ -7,12 +7,14 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Pin the image. ubuntu-latest moves to Ubuntu 26, and the Linux
+    # package below stays on 22.04 for the SteamOS glibc.
+    runs-on: ubuntu-24.04
     env:
       QT_QPA_PLATFORM: offscreen
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Qt libraries for the offscreen window
@@ -35,6 +37,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # 22.04, not ubuntu-latest: SteamOS still has that glibc.
           - os: ubuntu-22.04
             artifact: D2RSaveSync-linux
             binary: dist/D2RSaveSync
@@ -43,8 +46,8 @@ jobs:
             binary: dist/D2RSaveSync.exe
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Qt libraries for the Linux build
@@ -62,7 +65,7 @@ jobs:
           python -m pip install -e ".[gui]" pyinstaller
       - name: Build the single executable
         run: pyinstaller --noconfirm --clean D2RSaveSync.spec
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.binary }}
