@@ -36,6 +36,8 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
+    # Windowed parent. Child processes (tasklist, and any other helper)
+    # must pass CREATE_NO_WINDOW or the exe flashes a console on refresh.
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,

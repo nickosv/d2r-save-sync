@@ -12,7 +12,11 @@ from d2rsync.names import is_syncable_name
 
 
 def save_key(path: Path) -> str:
-    return os.path.normcase(str(path.resolve()))
+    try:
+        resolved = path.resolve()
+    except OSError:
+        resolved = path
+    return os.path.normcase(str(resolved))
 
 
 class SyncState:
@@ -76,7 +80,11 @@ def load_state(path: Path, save_root: Path) -> SyncState:
 
 
 def _read_document(path: Path) -> dict:
-    if not path.exists():
+    try:
+        exists = path.exists()
+    except OSError as exc:
+        raise SyncIOError(f"could not read sync state {path}: {exc}") from exc
+    if not exists:
         return {"version": 1, "folders": {}}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))

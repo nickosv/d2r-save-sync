@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import socket
 import unittest
+from unittest import mock
 
 from d2rsync.discover import (
     DiscoveryServer,
@@ -14,10 +15,36 @@ from d2rsync.discover import (
     discover,
     encode_announce,
     encode_discover,
+    locate_peer,
     parse_avahi_browse,
     parse_datagram,
     probe,
 )
+from d2rsync.errors import D2RSyncError
+
+
+class LocatePeerTests(unittest.TestCase):
+    def test_manual_peer_does_not_discover(self):
+        with mock.patch("d2rsync.discover.discover", side_effect=AssertionError("discovered")):
+            host, port = locate_peer("manual", "192.168.178.69", 41943, 41942)
+        self.assertEqual((host, port), ("192.168.178.69", 41943))
+
+    def test_manual_peer_keeps_a_port_written_in_the_address(self):
+        host, port = locate_peer("manual", "192.168.178.69:41943", 1, 41942)
+        self.assertEqual((host, port), ("192.168.178.69", 41943))
+
+    def test_manual_peer_without_an_address_is_an_error(self):
+        with mock.patch("d2rsync.discover.discover", side_effect=AssertionError("discovered")):
+            with self.assertRaises(D2RSyncError) as caught:
+                locate_peer("manual", "", 41943, 41942)
+        self.assertIn("no peer address", str(caught.exception))
+
+    def test_auto_peer_uses_discovery(self):
+        peer = Peer("192.168.178.69", 41943, "pc")
+        with mock.patch("d2rsync.discover.discover", return_value=[peer]) as found:
+            host, port = locate_peer("auto", None, 41943, 41942)
+        found.assert_called_once()
+        self.assertEqual((host, port), ("192.168.178.69", 41943))
 
 
 class DiscoverParseTests(unittest.TestCase):

@@ -18,7 +18,11 @@ class DirectorySave:
     def __init__(self, root: Path, backups: BackupManager):
         self.root = Path(root)
         self.backups = backups
-        if not self.root.is_dir():
+        try:
+            exists = self.root.is_dir()
+        except OSError as exc:
+            raise SyncIOError(f"save folder could not be read: {self.root}: {exc}") from exc
+        if not exists:
             raise SyncIOError(f"save folder does not exist: {self.root}")
 
     def inventory(self) -> dict[str, Entry]:
@@ -28,17 +32,21 @@ class DirectorySave:
         except OSError as exc:
             raise SyncIOError(f"could not list {self.root}: {exc}") from exc
         for child in children:
-            if not child.is_file() or child.is_symlink():
-                continue
+            try:
+                if not child.is_file() or child.is_symlink():
+                    continue
+            except OSError as exc:
+                raise SyncIOError(f"could not stat {child.name}: {exc}") from exc
             if not is_syncable_name(child.name):
                 continue
             try:
                 stat = child.stat()
+                data = child.read_bytes()
             except OSError as exc:
-                raise SyncIOError(f"could not stat {child.name}: {exc}") from exc
+                raise SyncIOError(f"could not read {child.name}: {exc}") from exc
             if stat.st_size > MAX_FILE_BYTES:
                 raise SyncIOError(f"{child.name} is larger than {MAX_FILE_BYTES} bytes")
-            digest = sha256_bytes(child.read_bytes())
+            digest = sha256_bytes(data)
             found[child.name] = Entry(digest, stat.st_size, stat.st_mtime)
         return found
 

@@ -1,4 +1,4 @@
-"""Danish view-model: dashboard rows, conflict card, and settings draft."""
+"""View-model: dashboard rows, conflict card, and settings draft."""
 
 from __future__ import annotations
 
@@ -6,16 +6,19 @@ import unittest
 from datetime import datetime
 
 from d2rsync.config import Config
-from d2rsync.errors import ConfigError, D2RSyncError, GameRunningError
+from d2rsync.errors import ConfigError, D2RSyncError, GameRunningError, SavePathError
 from d2rsync.model import Decision, Entry, Outcome
 from d2rsync.viewmodel import (
     apply_draft,
     build_result_view,
     build_rows,
     conflict_character_d2s,
-    danish_error,
+    DISCOVERY_MISS,
+    MISSING_SAVE_FOLDER,
+    NO_PEER_FOUND,
+    user_error,
     draft_from_config,
-    format_da_time,
+    format_when,
     format_footer,
     gui_conflict_policy,
     make_dashboard_view,
@@ -145,59 +148,59 @@ def mockup_result():
 
 
 class TimeTests(unittest.TestCase):
-    def test_danish_calendar_words(self):
-        self.assertEqual(format_da_time(_ts(24, 10, 12), NOW), "i dag 10:12")
-        self.assertEqual(format_da_time(_ts(23, 22, 41), NOW), "i går 22:41")
-        self.assertEqual(format_da_time(_ts(18, 21, 15), NOW), "18. okt 21:15")
-        self.assertEqual(format_da_time(None, NOW), "—")
-        self.assertIn("i går 22:41", format_footer(_ts(23, 22, 41), NOW))
-        self.assertIn("aldrig", format_footer(None, NOW))
+    def test_calendar_words(self):
+        self.assertEqual(format_when(_ts(24, 10, 12), NOW), "today 10:12")
+        self.assertEqual(format_when(_ts(23, 22, 41), NOW), "yesterday 22:41")
+        self.assertEqual(format_when(_ts(18, 21, 15), NOW), "18 Oct 21:15")
+        self.assertEqual(format_when(None, NOW), "—")
+        self.assertIn("yesterday 22:41", format_footer(_ts(23, 22, 41), NOW))
+        self.assertIn("never", format_footer(None, NOW))
 
 
 class DashboardTests(unittest.TestCase):
-    def test_rows_use_the_plan_action_and_danish_badges(self):
+    def test_rows_use_the_plan_action_and_badges(self):
         view = mockup_dashboard()
         by_title = {row.title: row for row in view.rows}
         self.assertEqual(
             [row.title for row in view.rows],
-            ["DemoNekro", "EksempelHelt", "PrøveAmazone", "TestPaladin", "Fælles stash"],
+            ["DemoNekro", "EksempelHelt", "PrøveAmazone", "TestPaladin", "Shared stash"],
         )
         hero = by_title["EksempelHelt"]
         self.assertEqual(hero.subtitle, "Sorceress · 87")
         self.assertEqual(hero.status, "send")
-        self.assertEqual(hero.status_label, "↑ Sendes")
+        self.assertEqual(hero.status_label, "↑ Send")
         self.assertTrue(hero.local_newer)
-        self.assertEqual(hero.local_time, "i dag 10:12")
-        self.assertEqual(hero.remote_time, "i går 22:40")
+        self.assertEqual(hero.local_time, "today 10:12")
+        self.assertEqual(hero.remote_time, "yesterday 22:40")
 
         paladin = by_title["TestPaladin"]
         self.assertEqual(paladin.subtitle, "Paladin · 74")
         self.assertEqual(paladin.status, "get")
         self.assertTrue(paladin.remote_newer)
-        self.assertEqual(paladin.remote_time, "i dag 09:55")
+        self.assertEqual(paladin.remote_time, "today 09:55")
 
         necro = by_title["DemoNekro"]
         self.assertEqual(necro.status, "conflict")
-        self.assertEqual(necro.status_label, "⚔ Konflikt")
+        self.assertEqual(necro.status_label, "⚔ Conflict")
         self.assertEqual(necro.subtitle, "Necromancer · 61")
 
         amazon = by_title["PrøveAmazone"]
         self.assertEqual(amazon.status, "ok")
-        self.assertEqual(amazon.status_label, "✓ Opdateret")
+        self.assertEqual(amazon.status_label, "✓ Up to date")
         self.assertFalse(amazon.local_newer)
         self.assertFalse(amazon.remote_newer)
 
-        stash = by_title["Fælles stash"]
-        self.assertEqual(stash.subtitle, "Delt kiste")
+        stash = by_title["Shared stash"]
+        self.assertEqual(stash.subtitle, "Shared stash")
         self.assertEqual(stash.detail, "SharedStashSoftCoreV2.d2i")
         self.assertEqual(stash.status, "send")
 
-        self.assertEqual(view.pill_text, "Steam Deck fundet – 192.168.1.42")
+        self.assertEqual(view.pill_text, "Steam Deck found – 192.168.1.42")
         self.assertEqual(view.peer_header, "Steam Deck")
         self.assertIn("D2R.exe", view.warning or "")
         self.assertFalse(view.button_enabled)
-        self.assertEqual(view.button_text, "Synkroniser nu")
-        self.assertIn("i går 22:41", view.footer)
+        self.assertEqual(view.button_text, "Sync now")
+        self.assertIn("yesterday 22:41", view.footer)
 
     def test_unknown_status_before_a_peer_answers(self):
         local, _remote, _decisions, local_d2s, _remote_d2s = mockup_files()
@@ -229,43 +232,43 @@ class DashboardTests(unittest.TestCase):
             sync_button_state(
                 role="host", game_running=False, block_game=True, busy=False, has_secret=True, has_save=True, hosting=False
             ).text,
-            "Start vært",
+            "Start host",
         )
         listening = sync_button_state(
             role="host", game_running=False, block_game=True, busy=False, has_secret=True, has_save=True, hosting=True
         )
-        self.assertEqual(listening.text, "Lytter…")
+        self.assertEqual(listening.text, "Listening…")
         self.assertFalse(listening.enabled)
         busy = sync_button_state(
             role="client", game_running=False, block_game=True, busy=True, has_secret=True, has_save=True, hosting=False
         )
-        self.assertEqual(busy.text, "Arbejder…")
+        self.assertEqual(busy.text, "Working…")
         self.assertFalse(busy.enabled)
 
 
 class ResultTests(unittest.TestCase):
     def test_conflict_card_keeps_both_and_leaves_those_files_out_of_the_table(self):
         view = mockup_result()
-        self.assertEqual(view.title, "Synkronisering fuldført")
-        self.assertEqual(view.pill, "3 filer synkroniseret · 1 konflikt løst")
+        self.assertEqual(view.title, "Sync finished")
+        self.assertEqual(view.pill, "3 files synced · 1 conflict resolved")
         self.assertIsNotNone(view.conflict)
         card = view.conflict
         assert card is not None
         self.assertEqual(card.name, "DemoNekro")
         self.assertEqual(card.class_name, "Necromancer")
-        self.assertIn("begge enheder", card.reason)
+        self.assertIn("both machines", card.reason)
         self.assertEqual(card.winner.heading, "Steam Deck")
-        self.assertIn("Niveau 62", card.winner.line)
-        self.assertIn("NYESTE", card.winner.badge)
-        self.assertEqual(card.loser.heading, "Denne PC")
-        self.assertIn("Niveau 61", card.loser.line)
-        self.assertIn("ÆLDRE", card.loser.badge)
+        self.assertIn("Level 62", card.winner.line)
+        self.assertIn("NEWEST", card.winner.badge)
+        self.assertEqual(card.loser.heading, "This PC")
+        self.assertIn("Level 61", card.loser.line)
+        self.assertIn("OLDER", card.loser.badge)
         self.assertIn("DemoNekro.d2s", card.loser.hint)
-        self.assertIn("behold begge", card.policy)
+        self.assertIn("keep both", card.policy)
         names = [item.filename for item in view.files]
         self.assertEqual(names, ["EksempelHelt.d2s", "TestPaladin.d2s", "SharedStashSoftCoreV2.d2i"])
-        self.assertEqual(view.files[0].action, "↑ Sendt til Steam Deck")
-        self.assertEqual(view.files[1].action, "↓ Hentet fra Steam Deck")
+        self.assertEqual(view.files[0].action, "↑ Sent to Steam Deck")
+        self.assertEqual(view.files[1].action, "↓ Received from Steam Deck")
         self.assertEqual(view.files[0].backup, "backup/2026-10-24_1014/")
         self.assertNotIn("DemoNekro", " ".join(names))
 
@@ -283,9 +286,9 @@ class ResultTests(unittest.TestCase):
             now=NOW,
             log_text="",
         )
-        self.assertEqual(dry.title, "Prøvekørsel")
-        self.assertIn("ville synkroniseres", dry.pill)
-        self.assertIn("Sendes til", dry.files[0].action)
+        self.assertEqual(dry.title, "Dry run")
+        self.assertIn("would sync", dry.pill)
+        self.assertIn("Will send to", dry.files[0].action)
         stopped = build_result_view(
             decisions=[],
             resolved=[],
@@ -298,7 +301,7 @@ class ResultTests(unittest.TestCase):
             now=NOW,
             log_text="",
         )
-        self.assertEqual(stopped.title, "Synkronisering stoppet")
+        self.assertEqual(stopped.title, "Sync stopped")
         self.assertIsNotNone(view)
 
 
@@ -341,11 +344,93 @@ class SettingsTests(unittest.TestCase):
 
 
 class ErrorTextTests(unittest.TestCase):
-    def test_known_failures_are_danish(self):
-        self.assertIn("kører", danish_error(GameRunningError("the game appears to be running")))
-        self.assertIn("hemmelighed", danish_error(D2RSyncError("shared secret rejected")))
-        self.assertIn("modpart", danish_error(D2RSyncError("no peer answered")))
-        self.assertIn("IP-adressen", danish_error(D2RSyncError("no peer address configured")))
+    def test_known_failures_are_specific(self):
+        self.assertIn("running", user_error(GameRunningError("the game appears to be running")))
+        self.assertIn("secret", user_error(D2RSyncError("shared secret rejected")))
+        self.assertEqual(user_error(D2RSyncError("no peer answered")), DISCOVERY_MISS)
+        self.assertIn("IP", user_error(D2RSyncError("no peer address configured")))
+        missing = SavePathError(
+            "could not find a Diablo II Resurrected save folder. Set save_path in the config file."
+        )
+        self.assertEqual(user_error(missing), MISSING_SAVE_FOLDER)
+        self.assertIn("8 characters", user_error(ConfigError("shared secret must be at least 8 characters")))
+        view = make_dashboard_view(
+            rows=[],
+            peer_name="",
+            peer_host="",
+            connected=False,
+            searching=False,
+            role="client",
+            hosting=False,
+            game_running=False,
+            peer_game_running=False,
+            block_game=True,
+            busy=False,
+            has_secret=True,
+            has_save=False,
+            synced_at=None,
+            now=NOW,
+        )
+        self.assertEqual(view.empty_text, MISSING_SAVE_FOLDER)
+        searching = make_dashboard_view(
+            rows=[],
+            peer_name="",
+            peer_host="",
+            connected=False,
+            searching=True,
+            role="client",
+            hosting=False,
+            game_running=False,
+            peer_game_running=False,
+            block_game=True,
+            busy=False,
+            has_secret=True,
+            has_save=False,
+            synced_at=None,
+            now=NOW,
+        )
+        self.assertNotEqual(searching.empty_text, MISSING_SAVE_FOLDER)
+        self.assertEqual(searching.pill_text, "Looking for the other machine…")
+        missed = make_dashboard_view(
+            rows=[],
+            peer_name="",
+            peer_host="",
+            connected=False,
+            searching=False,
+            role="client",
+            hosting=False,
+            game_running=False,
+            peer_game_running=False,
+            block_game=True,
+            busy=False,
+            has_secret=True,
+            has_save=True,
+            synced_at=None,
+            now=NOW,
+            status_error=DISCOVERY_MISS,
+        )
+        self.assertEqual(missed.pill_text, NO_PEER_FOUND)
+        refused = make_dashboard_view(
+            rows=[],
+            peer_name="",
+            peer_host="",
+            connected=False,
+            searching=False,
+            role="client",
+            hosting=False,
+            game_running=False,
+            peer_game_running=False,
+            block_game=True,
+            busy=False,
+            has_secret=True,
+            has_save=True,
+            synced_at=None,
+            now=NOW,
+            status_error="Could not connect. Check the IP, port, and that the host is running.",
+        )
+        self.assertEqual(refused.pill_text, "Could not connect. Check the IP, port, and that the host is running.")
+        self.assertEqual(refused.pill_kind, "bad")
+        self.assertNotEqual(refused.pill_text, NO_PEER_FOUND)
 
 
 if __name__ == "__main__":

@@ -51,18 +51,18 @@ def parse_d2s(data: bytes) -> CharacterInfo | None:
 
 def read_local_d2s(root: Path) -> dict[str, bytes]:
     found: dict[str, bytes] = {}
-    if not root.is_dir():
-        return found
     try:
+        if not root.is_dir():
+            return found
         children = list(root.iterdir())
     except OSError:
         return found
     for child in children:
-        if not child.is_file() or child.is_symlink():
-            continue
-        if child.suffix.lower() != ".d2s":
-            continue
         try:
+            if not child.is_file() or child.is_symlink():
+                continue
+            if child.suffix.lower() != ".d2s":
+                continue
             found[child.name] = child.read_bytes()
         except OSError:
             continue

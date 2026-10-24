@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 MARKERS = ("d2r.exe", "diablo ii resurrected")
@@ -27,6 +28,26 @@ def game_is_running(names: list[str] | None = None) -> bool | None:
     return False
 
 
+def no_console_kwargs() -> dict:
+    """Keep a windowed Windows build from flashing a console for a child process.
+
+    ``tasklist`` is a console program. The PyInstaller executable is built with
+    ``console=False``, which only covers the parent. Without ``CREATE_NO_WINDOW``
+    the game check opens a console window on every refresh.
+    """
+    if os.name != "nt":
+        return {}
+    kwargs: dict = {"creationflags": int(getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))}
+    # STARTUPINFO is Windows-only. creationflags alone is what tests can assert
+    # on other platforms; both are set on a real Windows process.
+    if sys.platform == "win32":
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = 0
+        kwargs["startupinfo"] = startupinfo
+    return kwargs
+
+
 def list_process_names() -> list[str] | None:
     if os.name == "nt":
         return _windows_processes()
@@ -41,6 +62,7 @@ def _windows_processes() -> list[str] | None:
             capture_output=True,
             text=True,
             timeout=15,
+            **no_console_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
