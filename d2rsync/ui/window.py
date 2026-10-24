@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QApplication,
     QButtonGroup,
+    QCheckBox,
     QDialog,
     QFileDialog,
     QFrame,
@@ -50,9 +51,18 @@ from d2rsync.d2s import read_local_d2s
 from d2rsync.discover import locate_peer, safe_service_name
 from d2rsync.errors import D2RSyncError
 from d2rsync.game import game_is_running
+from d2rsync.model import Decision
+from d2rsync.names import (
+    block_list,
+    characters_in_folder,
+    list_save_filenames,
+    load_d2s_bytes,
+    omit_blocked,
+    online_character_names,
+)
 from d2rsync.paths import configured_save_folder
 from d2rsync.preview import preview_with_peer
-from d2rsync.server import Server
+from d2rsync.server import HostNotice, Server
 from d2rsync.state import load_state
 from d2rsync.store import DirectorySave
 from d2rsync.text import format_outcomes, format_plan
@@ -98,10 +108,10 @@ class _HostLog:
         self._window.log_line.emit(message)
 
     def warn(self, message: str) -> None:
-        self._window.log_line.emit("advarsel: " + message)
+        self._window.log_line.emit("warning: " + message)
 
     def error(self, message: str) -> None:
-        self._window.log_line.emit("fejl: " + message)
+        self._window.log_line.emit("error: " + message)
 
 
 class Backdrop(QWidget):
@@ -119,7 +129,7 @@ class MainWindow(QMainWindow):
     log_line = Signal(str)
     host_failed = Signal(str)
     host_stopped = Signal()
-    session_arrived = Signal()
+    host_notice = Signal(object)
 
     def __init__(self, autostart: bool = True, config_file: Path | None = None):
         super().__init__()
@@ -140,6 +150,10 @@ class MainWindow(QMainWindow):
         self._session_note = ""
         self._note_sticky = False
         self._last_logged_note = ""
+        self._refresh_pending = False
+        self._character_checks: list[tuple[str, QCheckBox, bool]] = []
+        self.host_activity = "waiting"
+        self.last_peer_name = ""
 
         self.local_files: dict = {}
         self.remote_files: dict = {}
@@ -170,7 +184,7 @@ class MainWindow(QMainWindow):
         self.log_line.connect(self._append_log)
         self.host_failed.connect(self._on_host_failed)
         self.host_stopped.connect(self._on_host_stopped)
-        self.session_arrived.connect(self._on_session)
+        self.host_notice.connect(self._on_host_notice)
 
         self._timer = QTimer(self)
         self._timer.setInterval(20000)
@@ -377,6 +391,20 @@ class MainWindow(QMainWindow):
         path_row.addWidget(auto)
         path_layout.addWidget(path_frame)
         form_layout.addWidget(path_block)
+
+        char_block, char_layout = self._block()
+        char_layout.addWidget(self._field_label("CHARACTERS"))
+        self.character_hint = self._hint(
+            "Checked characters are not synced. Online characters are always left on Battle.net."
+        )
+        char_layout.addWidget(self.character_hint)
+        self.character_list = QWidget()
+        self.character_list.setStyleSheet("background: transparent;")
+        self.character_rows = QVBoxLayout(self.character_list)
+        self.character_rows.setContentsMargins(0, 0, 0, 0)
+        self.character_rows.setSpacing(6)
+        char_layout.addWidget(self.character_list)
+        form_layout.addWidget(char_block)
 
         role_block, role_layout = self._block()
         role_layout.addWidget(self._field_label("MODE"))
@@ -626,8 +654,12 @@ class MainWindow(QMainWindow):
             button.setChecked(True)
 
     def refresh(self) -> None:
-        if self._closing or (self._worker is not None and self._worker.isRunning()):
+        if self._closing:
             return
+        if self._worker is not None and self._worker.isRunning():
+            self._refresh_pending = True
+            return
+        self._refresh_pending = False
         if self.cfg.role == "client":
             self.searching = True
             self._render_dashboard_from_state()
@@ -675,12 +707,19 @@ class MainWindow(QMainWindow):
         elif not self._note_sticky:
             self._note = ""
         self._render_dashboard_from_state()
+        self._refresh_if_pending()
 
     def _on_refresh_fail(self, exc: BaseException) -> None:
         self.searching = False
         self._note = user_error(exc)
         self._note_sticky = False
         self._render_dashboard_from_state()
+        self._refresh_if_pending()
+
+    def _refresh_if_pending(self) -> None:
+        if self._refresh_pending and not self._closing:
+            self._refresh_pending = False
+            self.refresh()
 
     def _render_dashboard_from_state(self) -> None:
         try:
@@ -711,6 +750,8 @@ class MainWindow(QMainWindow):
             synced_at=self.synced_at,
             now=datetime.now(),
             status_error="" if self._note_sticky else self._note,
+            host_activity=self.host_activity if self.hosting else "waiting",
+            footer_peer=self.last_peer_name,
         )
         self._render_dashboard(view)
         self.dash_note.setText(self._note)
@@ -858,7 +899,7 @@ class MainWindow(QMainWindow):
             if self._host_stop_requested:
                 return
             root = resolve_save_folder(snap.save_path)
-            server = _make_server(snap, root, self.session_arrived.emit, _HostLog(self))
+            server = _make_server(snap, root, self.host_notice.emit, _HostLog(self))
             self._server = server
             if self._host_stop_requested:
                 return
@@ -913,9 +954,66 @@ class MainWindow(QMainWindow):
         self.busy = False
         self._render_dashboard_from_state()
 
-    def _on_session(self) -> None:
-        self._session_note = "The other machine has synced."
-        self._append_log(self._session_note)
+    def _on_host_notice(self, notice: HostNotice) -> None:
+        if self._closing or not isinstance(notice, HostNotice):
+            return
+        if notice.peer_name:
+            self.peer_name = notice.peer_name
+        if notice.peer_host:
+            self.peer_host = notice.peer_host
+        if notice.phase == "connected":
+            self.host_activity = "connected"
+            self.connected = True
+            self._note = notice.detail or f"{self.peer_name} connected."
+            self._note_sticky = True
+            self._append_log(self._note)
+            self._render_dashboard_from_state()
+            return
+        if notice.phase == "progress":
+            self.host_activity = "syncing"
+            self.connected = True
+            if notice.detail:
+                self._note = notice.detail
+                self._note_sticky = True
+                self._append_log(notice.detail)
+            self._render_dashboard_from_state()
+            return
+        if notice.phase != "finished":
+            return
+        self.host_activity = "waiting"
+        self.connected = False
+        if notice.synced_at is not None:
+            self.synced_at = notice.synced_at
+            self.last_peer_name = notice.peer_name
+        if not notice.show_result:
+            if notice.detail:
+                self._note = notice.detail
+                self._note_sticky = True
+                self._append_log(notice.detail)
+            else:
+                self._note = ""
+                self._note_sticky = False
+            self._render_dashboard_from_state()
+            return
+        view = build_result_view(
+            decisions=[],
+            resolved=[],
+            outcomes=list(notice.outcomes),
+            local_d2s={},
+            remote_d2s={},
+            peer_name=notice.peer_name,
+            dry_run=notice.dry_run,
+            conflict_policy=gui_conflict_policy(self.cfg.conflict),
+            now=datetime.now(),
+            log_text=notice.detail,
+        )
+        self._append_log(view.log_text)
+        self._render_result(view)
+        self._show_page(1)
+        self._session_note = notice.detail or f"Synced with {notice.peer_name}."
+        self._note = self._session_note
+        self._note_sticky = True
+        self._render_dashboard_from_state()
         self.refresh()
 
     def _done(self) -> None:
@@ -955,7 +1053,41 @@ class MainWindow(QMainWindow):
             secret=self.secret.text(),
             retention_days=self._retention,
             block_game=self.block.isChecked(),
+            exclude_characters=tuple(self._excluded_character_names()),
         )
+
+    def _excluded_character_names(self) -> list[str]:
+        return [name for name, box, online in self._character_checks if box.isChecked() and not online]
+
+    def _reload_characters(self, selected: list[str] | None = None) -> None:
+        if selected is None:
+            selected = self._excluded_character_names()
+        while self.character_rows.count():
+            item = self.character_rows.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        self._character_checks = []
+        selected_keys = {name.casefold() for name in selected}
+        folder = self._current_save_text()
+        choices = characters_in_folder(folder)
+        if not choices:
+            empty = QLabel("No characters in this save folder.")
+            empty.setProperty("role", "hint")
+            self.character_rows.addWidget(empty)
+            return
+        for choice in choices:
+            box = QCheckBox(f"{choice.name}   {choice.subtitle}")
+            box.setProperty("character", choice.name)
+            box.setProperty("online", "true" if choice.online else "false")
+            if choice.online:
+                box.setChecked(True)
+                box.setEnabled(False)
+            else:
+                box.setChecked(choice.name.casefold() in selected_keys)
+            self.character_rows.addWidget(box)
+            self._character_checks.append((choice.name, box, choice.online))
 
     def _fill_settings(self, draft: SettingsDraft) -> None:
         self._pinned = bool(draft.save_path)
@@ -973,6 +1105,7 @@ class MainWindow(QMainWindow):
         self.block.blockSignals(True)
         self.block.setChecked(bool(draft.block_game))
         self.block.blockSignals(False)
+        self._reload_characters(list(draft.exclude_characters))
         self._update_setting_hints()
 
     def _update_setting_hints(self) -> None:
@@ -1044,11 +1177,13 @@ class MainWindow(QMainWindow):
         self._pinned = True
         self.path_edit.setText(chosen)
         self._update_path_label()
+        self._reload_characters()
 
     def _clear_folder_override(self) -> None:
         self._pinned = False
         self.path_edit.setText(self._detected)
         self._update_path_label()
+        self._reload_characters()
 
     def _trial_config(self) -> Config:
         draft = self._read_draft()
@@ -1178,6 +1313,7 @@ class MainWindow(QMainWindow):
             retention_days=cfg.backup_retention_days,
             state_file=self._state_file(),
             dry_run=self.dry.isChecked(),
+            exclude_characters=tuple(cfg.exclude_characters or []),
         )
 
     def _state_file(self) -> Path:
@@ -1278,13 +1414,27 @@ def _job_refresh(snap: SimpleNamespace) -> dict:
     payload["save"] = save
     try:
         store = DirectorySave(save, BackupManager(save))
-        payload["local_files"] = store.inventory()
-        payload["local_d2s"] = read_local_d2s(save)
+        filenames = list_save_filenames(save)
+        blocked = block_list(
+            list(getattr(snap, "exclude_characters", ()) or ()),
+            online_character_names(filenames, load_d2s_bytes(save, filenames)),
+        )
+        files, _state = omit_blocked(store.inventory(), {}, blocked)
+        d2s = read_local_d2s(save)
+        kept_d2s, _ignored = omit_blocked(d2s, {}, blocked)
+        payload["local_files"] = files
+        payload["local_d2s"] = kept_d2s
         payload["synced_at"] = load_state(snap.state_file, save).synced_at
     except D2RSyncError as exc:
         payload["error"] = user_error(exc)
         return payload
     if snap.role != "client":
+        if payload["synced_at"] is not None:
+            payload["remote_files"] = dict(payload["local_files"])
+            payload["decisions"] = [
+                Decision(name, "none", "match", "contents match", entry, entry)
+                for name, entry in payload["local_files"].items()
+            ]
         return payload
     if not snap.secret:
         payload["error"] = "Enter a shared secret in Settings."
@@ -1298,6 +1448,7 @@ def _job_refresh(snap: SimpleNamespace) -> dict:
             host=host,
             port=port,
             name=snap.name,
+            exclude_characters=getattr(snap, "exclude_characters", ()),
         )
     except Exception as exc:  # noqa: BLE001 — expected peer failures
         payload["error"] = user_error(exc)
@@ -1330,6 +1481,7 @@ def _job_sync(snap: SimpleNamespace) -> dict:
         retention_days=snap.retention_days,
         name=snap.name,
         chooser=None,
+        exclude_characters=getattr(snap, "exclude_characters", ()),
     )
     peer_name = safe_service_name(str(notes.get("peer_name") or host))
     decisions = list(notes.get("decisions") or [])
@@ -1359,7 +1511,7 @@ def _job_test(snap: SimpleNamespace) -> str:
     return f"Connected to {host}:{port}."
 
 
-def _make_server(snap: SimpleNamespace, root: Path, on_session, log) -> Server:
+def _make_server(snap: SimpleNamespace, root: Path, on_notice, log) -> Server:
     store = DirectorySave(
         root,
         BackupManager(root, retention_count=snap.retention_count, retention_days=snap.retention_days),
@@ -1376,7 +1528,8 @@ def _make_server(snap: SimpleNamespace, root: Path, on_session, log) -> Server:
         refuse_if_game_running=snap.refuse,
         discover=snap.peer_mode != "manual",
         log=log,
-        on_session=on_session,
+        on_notice=on_notice,
+        exclude_characters=getattr(snap, "exclude_characters", ()),
     )
 
 

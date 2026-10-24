@@ -29,6 +29,19 @@ class CharacterInfo:
     level: int
 
 
+def d2s_is_online(_data: bytes) -> bool:
+    """Return True only when the header positively marks a Battle.net character.
+
+    The published classic header (status at byte 36) and the Resurrected v105
+    header (status at byte 0x14) document hardcore, death, expansion, and
+    ladder. They do not document a realm or online bit. Bits that those
+    layouts leave unspecified are not treated as one: doing so would skip
+    real offline characters. Online characters are recognized from the save
+    folder instead (a `.keyo` or `.ctlo` and no `.d2s`).
+    """
+    return False
+
+
 def parse_d2s(data: bytes) -> CharacterInfo | None:
     if len(data) < 44:
         return None

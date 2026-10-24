@@ -209,6 +209,126 @@ class WindowSmokeTests(unittest.TestCase):
         self.assertEqual(window.dash_pill_text.text(), "No peer found")
         window.close()
 
+    def test_character_checkboxes_save_the_exclude_list(self):
+        from PySide6.QtWidgets import QCheckBox
+
+        from d2rsync.ui.window import MainWindow
+        from tests.support import write_file
+
+        directory = Path(tempfile.mkdtemp())
+        saves = directory / "saves"
+        saves.mkdir()
+        write_file(saves, "Hero.d2s", b"hero")
+        write_file(saves, "Bloodoath.keyo", b"keys")
+        write_file(saves, "Bloodoath.ctlo", b"pad")
+        window = MainWindow(autostart=False, config_file=directory / "config.json")
+        window.show_settings_draft(
+            SettingsDraft(
+                save_path=str(saves),
+                role="client",
+                peer_mode="auto",
+                peer_host="",
+                port=41943,
+                secret="shared-secret",
+                retention_days=30,
+                block_game=True,
+            )
+        )
+        self.app.processEvents()
+        boxes = {
+            box.property("character"): box
+            for box in window.findChildren(QCheckBox)
+            if box.property("character")
+        }
+        self.assertEqual(set(boxes), {"Hero", "Bloodoath"})
+        self.assertTrue(boxes["Bloodoath"].isChecked())
+        self.assertFalse(boxes["Bloodoath"].isEnabled())
+        self.assertIn("Online", boxes["Bloodoath"].text())
+        self.assertTrue(boxes["Hero"].isEnabled())
+        boxes["Hero"].setChecked(True)
+        window._save_settings()
+        if window._worker is not None:
+            window._worker.wait(8000)
+        self.app.processEvents()
+        loaded = load_config(directory / "config.json")
+        self.assertEqual(loaded.exclude_characters, ["Hero"])
+        self.assertNotIn("Bloodoath", loaded.exclude_characters)
+        window.close()
+
+    def test_host_notice_opens_the_result_and_returns_to_waiting(self):
+        from PySide6.QtWidgets import QLabel
+
+        from d2rsync.model import Outcome
+        from d2rsync.server import HostNotice
+        from d2rsync.state import SyncState, save_key
+        from d2rsync.ui.window import MainWindow
+
+        directory = Path(tempfile.mkdtemp())
+        saves = directory / "saves"
+        saves.mkdir()
+        (saves / "Hero.d2s").write_bytes(b"hero")
+        (saves / "Bloodoath.keyo").write_bytes(b"online-keys")
+        (saves / "Bloodoath.ctlo").write_bytes(b"online-pad")
+        window = MainWindow(autostart=False, config_file=directory / "config.json")
+        window.role.set_current("host")
+        window.secret.setText("shared-secret")
+        window._pinned = True
+        window.path_edit.setText(str(saves))
+        window.cfg.role = "host"
+        window.cfg.secret = "shared-secret"
+        window.cfg.save_path = str(saves)
+        window.hosting = True
+        SyncState(window._state_file(), save_key(saves)).mark_synced(1_700_000_000)
+        window.show()
+        self.app.processEvents()
+
+        window.host_notice.emit(
+            HostNotice("connected", "steamdeck", "192.168.1.20", detail="steamdeck connected.")
+        )
+        self.app.processEvents()
+        self.assertEqual(window.dash_pill_text.text(), "steamdeck connected – 192.168.1.20")
+
+        window.host_notice.emit(
+            HostNotice("progress", "steamdeck", "192.168.1.20", detail="Sent Hero.d2s")
+        )
+        self.app.processEvents()
+        self.assertEqual(window.dash_pill_text.text(), "Syncing with steamdeck – 192.168.1.20")
+        self.assertIn("Listening", window.sync_btn.text())
+
+        window.host_notice.emit(
+            HostNotice(
+                "finished",
+                "steamdeck",
+                "192.168.1.20",
+                detail="Synced with steamdeck.",
+                outcomes=(Outcome("Hero.d2s", "push", "sent to steamdeck"),),
+                synced_at=1_700_000_000.0,
+                show_result=True,
+            )
+        )
+        self.app.processEvents()
+        if window._worker is not None:
+            window._worker.wait(8000)
+        self.app.processEvents()
+        self.assertEqual(window.stack.currentIndex(), 1)
+        self.assertIn("1 file synced", window.result_pill_text.text())
+        texts = " ".join(label.text() for label in window.findChildren(QLabel))
+        self.assertIn("Sent to steamdeck", texts)
+        self.assertTrue(window.hosting)
+        self.assertIsNone(window._server)
+
+        window._done()
+        if window._worker is not None:
+            window._worker.wait(8000)
+        self.app.processEvents()
+        self.assertEqual(window.stack.currentIndex(), 0)
+        self.assertIn("waiting for the other machine", window.dash_pill_text.text())
+        self.assertIn("steamdeck", window.footer.text())
+        labels = " ".join(label.text() for label in window.findChildren(QLabel))
+        self.assertIn("Up to date", labels)
+        self.assertNotIn("Bloodoath", labels)
+        window.close()
+
 
 if __name__ == "__main__":
     unittest.main()

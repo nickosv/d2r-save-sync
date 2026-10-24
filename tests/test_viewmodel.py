@@ -155,6 +155,9 @@ class TimeTests(unittest.TestCase):
         self.assertEqual(format_when(None, NOW), "—")
         self.assertIn("yesterday 22:41", format_footer(_ts(23, 22, 41), NOW))
         self.assertIn("never", format_footer(None, NOW))
+        named = format_footer(_ts(23, 22, 41), NOW, "steamdeck")
+        self.assertIn("steamdeck", named)
+        self.assertIn("Backup before overwrite: on", named)
 
 
 class DashboardTests(unittest.TestCase):
@@ -303,6 +306,31 @@ class ResultTests(unittest.TestCase):
         )
         self.assertEqual(stopped.title, "Sync stopped")
         self.assertIsNotNone(view)
+        archived = build_result_view(
+            decisions=[],
+            resolved=[],
+            outcomes=[
+                Outcome("Hero.d2s", "pull", "received"),
+                Outcome(
+                    "Hero.d2s",
+                    "archive",
+                    "conflict copy",
+                    conflict=True,
+                    archive_path=".d2r-sync-backups/conflicts/1-from-steamdeck/Hero.d2s",
+                ),
+            ],
+            local_d2s={},
+            remote_d2s={},
+            peer_name="steamdeck",
+            dry_run=False,
+            conflict_policy="keep-both",
+            now=NOW,
+            log_text="",
+        )
+        self.assertIn("1 file synced", archived.pill)
+        self.assertIn("1 conflict resolved", archived.pill)
+        self.assertTrue(any(item.action == "Conflict backup" for item in archived.files))
+        self.assertIn("conflicts", archived.archive_dir)
 
 
 class SettingsTests(unittest.TestCase):
@@ -318,6 +346,18 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(fresh.peer, "192.168.1.42")
         self.assertEqual(fresh.port, 47821)
         self.assertEqual(fresh.secret, "12345678")
+        self.assertEqual(fresh.exclude_characters, [])
+
+    def test_exclude_list_roundtrips_and_rejects_a_path(self):
+        cfg = Config(exclude_characters=["Hero", "hero"])
+        draft = draft_from_config(cfg)
+        self.assertEqual(draft.exclude_characters, ("Hero", "hero"))
+        fresh = Config()
+        apply_draft(fresh, draft)
+        self.assertEqual(fresh.exclude_characters, ["Hero"])
+        draft.exclude_characters = ("../Hero",)
+        with self.assertRaises(ConfigError):
+            apply_draft(Config(), draft)
 
     def test_rejects_a_short_secret_and_a_zero_retention(self):
         cfg = Config()
@@ -341,6 +381,41 @@ class SettingsTests(unittest.TestCase):
         names = conflict_character_d2s(decisions, ["Hero.d2s", "Hero.key", "Other.d2s"])
         self.assertEqual(names, ["Hero.d2s"])
         self.assertEqual(conflict_character_d2s([], ["Hero.d2s"]), [])
+
+
+class HostStatusTests(unittest.TestCase):
+    def _view(self, **overrides):
+        values = dict(
+            rows=[],
+            peer_name="steamdeck",
+            peer_host="192.168.1.20",
+            connected=False,
+            searching=False,
+            role="host",
+            hosting=True,
+            game_running=False,
+            peer_game_running=False,
+            block_game=True,
+            busy=False,
+            has_secret=True,
+            has_save=True,
+            synced_at=_ts(23, 22, 41),
+            now=NOW,
+            footer_peer="steamdeck",
+        )
+        values.update(overrides)
+        return make_dashboard_view(**values)
+
+    def test_host_pill_shows_the_peer_then_returns_to_waiting(self):
+        waiting = self._view()
+        self.assertEqual(waiting.pill_text, "Host active – waiting for the other machine")
+        self.assertEqual(waiting.button_text, "Listening…")
+        self.assertIn("steamdeck", waiting.footer)
+        connected = self._view(host_activity="connected")
+        self.assertEqual(connected.pill_text, "steamdeck connected – 192.168.1.20")
+        syncing = self._view(host_activity="syncing")
+        self.assertEqual(syncing.pill_text, "Syncing with steamdeck – 192.168.1.20")
+        self.assertEqual(syncing.button_text, "Listening…")
 
 
 class ErrorTextTests(unittest.TestCase):

@@ -17,9 +17,7 @@ class NameTests(unittest.TestCase):
         included = [
             "Hero.d2s",
             "Hero.key",
-            "Hero.keyo",
             "Hero.ctl",
-            "Hero.ctlo",
             "Hero.ma0",
             "Hero.ma3",
             "Hero.map",
@@ -33,6 +31,8 @@ class NameTests(unittest.TestCase):
 
     def test_backups_temp_files_and_unrelated_names_are_excluded(self):
         excluded = [
+            "Hero.keyo",
+            "Hero.ctlo",
             "Hero.bak",
             "Hero.d2s.bak",
             "Hero.d2s.d2rsync-tmp",
@@ -65,7 +65,8 @@ class InventoryTests(unittest.TestCase):
         outside.write_bytes(b"secret")
         (save / "Linked.d2s").symlink_to(outside)
         found = DirectorySave(save, BackupManager(save)).inventory()
-        self.assertEqual(set(found), {"Hero.d2s", "Hero.ctlo"})
+        self.assertEqual(set(found), {"Hero.d2s"})
+        self.assertTrue((save / "Hero.ctlo").is_file())
         self.assertEqual(found["Hero.d2s"].size, 4)
 
     def test_write_refuses_a_symlink_and_does_not_touch_the_target(self):

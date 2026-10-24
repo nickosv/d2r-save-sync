@@ -235,4 +235,22 @@ QFrame#loser {
     border-radius: 12px;
     background: rgba(24, 18, 15, 230);
 }
+QCheckBox {
+    color: #e8dcc4;
+    font-size: 16px;
+    spacing: 10px;
+    background: transparent;
+}
+QCheckBox::indicator {
+    width: 18px;
+    height: 18px;
+    border: 1px solid #8a7048;
+    border-radius: 4px;
+    background: #1c120d;
+}
+QCheckBox::indicator:checked {
+    background: #8a2a1e;
+    border: 1px solid #e0b65a;
+}
+QCheckBox:disabled { color: #8a7a62; }
 """

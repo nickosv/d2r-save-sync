@@ -14,10 +14,10 @@ from d2rsync.config import Config
 from d2rsync.d2s import CharacterInfo, parse_d2s
 from d2rsync.errors import ConfigError
 from d2rsync.model import Decision, Entry, Outcome, Resolved
+from d2rsync.names import MAX_CHARACTER_NAME_LENGTH, MAX_CHARACTER_NAMES, character_stem
 from d2rsync.plan import MTIME_TIE_SECONDS, preferred_side
 
 _MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
-_SUFFIXES = (".d2s", ".key", ".keyo", ".ctl", ".ctlo", ".map")
 _MA = re.compile(r"^(?P<stem>.+)\.ma\d+$", re.IGNORECASE)
 
 MISSING_SAVE_FOLDER = "Save folder was not found. Choose it in Settings."
@@ -109,6 +109,7 @@ class SettingsDraft:
     secret: str = ""
     retention_days: int = 30
     block_game: bool = True
+    exclude_characters: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -129,12 +130,13 @@ def format_when(mtime: float | None, now: datetime) -> str:
     return f"{moment.day} {_MONTHS[moment.month - 1]} {clock}"
 
 
-def format_footer(synced_at: float | None, now: datetime) -> str:
+def format_footer(synced_at: float | None, now: datetime, peer: str = "") -> str:
     if synced_at is None:
         when = "never"
     else:
         when = format_when(synced_at, now)
-    return f"Last sync: {when} · Backup before overwrite: on"
+    peer_bit = f" · {peer}" if peer else ""
+    return f"Last sync: {when}{peer_bit} · Backup before overwrite: on"
 
 
 def group_key(filename: str) -> tuple[str, str]:
@@ -142,12 +144,9 @@ def group_key(filename: str) -> tuple[str, str]:
     lower = filename.lower()
     if lower.startswith("sharedstash") and lower.endswith(".d2i"):
         return filename, "stash"
-    for suffix in _SUFFIXES:
-        if lower.endswith(suffix) and len(filename) > len(suffix):
-            return filename[: -len(suffix)], "character"
-    match = _MA.match(filename)
-    if match:
-        return match.group("stem"), "character"
+    stem = character_stem(filename)
+    if stem:
+        return stem, "character"
     return filename, "file"
 
 
@@ -229,6 +228,8 @@ def make_dashboard_view(
     synced_at: float | None,
     now: datetime,
     status_error: str = "",
+    host_activity: str = "waiting",
+    footer_peer: str = "",
 ) -> DashboardView:
     button = sync_button_state(
         role=role,
@@ -240,8 +241,17 @@ def make_dashboard_view(
         hosting=hosting,
     )
     if role == "host" and hosting:
-        pill_text = "Host active – waiting for the other machine"
-        pill_kind = "ok"
+        if host_activity == "syncing" and peer_name:
+            where = f" – {peer_host}" if peer_host else ""
+            pill_text = f"Syncing with {peer_name}{where}"
+            pill_kind = "wait"
+        elif host_activity == "connected" and peer_name:
+            where = f" – {peer_host}" if peer_host else ""
+            pill_text = f"{peer_name} connected{where}"
+            pill_kind = "ok"
+        else:
+            pill_text = "Host active – waiting for the other machine"
+            pill_kind = "ok"
     elif connected and peer_host:
         pill_text = f"{peer_name} found – {peer_host}"
         pill_kind = "ok"
@@ -280,7 +290,7 @@ def make_dashboard_view(
         peer_header=header,
         button_enabled=button.enabled,
         button_text=button.text,
-        footer=format_footer(synced_at, now),
+        footer=format_footer(synced_at, now, footer_peer),
         empty_text=empty_text,
     )
 
@@ -380,6 +390,7 @@ def draft_from_config(cfg: Config) -> SettingsDraft:
         secret=cfg.secret or "",
         retention_days=cfg.backup_retention_days,
         block_game=cfg.refuse_if_game_running,
+        exclude_characters=tuple(cfg.exclude_characters or []),
     )
 
 
@@ -403,6 +414,7 @@ def apply_draft(cfg: Config, draft: SettingsDraft) -> None:
     cfg.secret = secret or None
     cfg.backup_retention_days = int(draft.retention_days)
     cfg.refuse_if_game_running = bool(draft.block_game)
+    cfg.exclude_characters = _character_names(draft.exclude_characters)
 
 
 def gui_conflict_policy(policy: str) -> str:
@@ -660,6 +672,9 @@ def _past_action(outcome: Outcome, peer_name: str, dry_run: bool) -> tuple[str, 
         return "delete", verb
     if outcome.op in ("skip", "unresolved"):
         return "conflict", "Skipped"
+    if outcome.op == "archive":
+        verb = "Will archive conflict" if dry_run else "Conflict backup"
+        return "conflict", verb
     return "ok", outcome.op
 
 
@@ -682,3 +697,30 @@ def _archive_hint(outcomes: list[Outcome], names: set[str], dry_run: bool) -> st
 
 def _count_label(count: int, one: str, many: str) -> str:
     return f"{count} {one if count == 1 else many}"
+
+
+def _character_names(names) -> list[str]:
+    if isinstance(names, str) or not isinstance(names, (list, tuple)):
+        raise ConfigError("exclude_characters must be a list of character names")
+    chosen: list[str] = []
+    seen: set[str] = set()
+    for item in names:
+        if not isinstance(item, str):
+            raise ConfigError("exclude_characters must be a list of character names")
+        text = item.strip()
+        if (
+            not text
+            or len(text) > MAX_CHARACTER_NAME_LENGTH
+            or "/" in text
+            or "\\" in text
+            or text.startswith(".")
+        ):
+            raise ConfigError(f"character name is not valid: {item}")
+        key = text.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        chosen.append(text)
+        if len(chosen) > MAX_CHARACTER_NAMES:
+            raise ConfigError(f"exclude at most {MAX_CHARACTER_NAMES} characters")
+    return chosen
