@@ -36,6 +36,7 @@ class Server:
         timeout: float = 60.0,
         fail_delay: float = 1.0,
         game_check=None,
+        on_session=None,
         log=None,
     ):
         self.save = save
@@ -51,6 +52,7 @@ class Server:
         self.timeout = timeout
         self.fail_delay = fail_delay
         self.game_check = game_check or game_is_running
+        self.on_session = on_session
         self.log = log or _NullLog()
         self.bound_port: int | None = None
         self._stop = threading.Event()
@@ -99,6 +101,11 @@ class Server:
                         conn.close()
                     except OSError:
                         pass
+                if completed and self.on_session is not None:
+                    try:
+                        self.on_session()
+                    except Exception as exc:  # noqa: BLE001 — listener stays up
+                        self.log.error(f"session callback failed: {exc}")
                 if self.once and completed:
                     break
         finally:
@@ -282,14 +289,14 @@ class Server:
             conn.send_msg({"t": "archive_ok", "rel": rel, "path": path})
             return
         mtime = float(message.get("mtime", time.time()))
-        self.save.write_bytes(rel, data, mtime)
-        conn.send_msg({"t": "put_ok", "rel": rel, "sha256": digest})
+        backup = self.save.write_bytes(rel, data, mtime)
+        conn.send_msg({"t": "put_ok", "rel": rel, "sha256": digest, "backup": backup})
 
     def _delete(self, conn: Conn, message: dict, force: bool) -> None:
         rel = validate_rel(str(message.get("rel", "")))
         self._guard_game(force)
-        self.save.remove(rel)
-        conn.send_msg({"t": "delete_ok", "rel": rel})
+        backup = self.save.remove(rel)
+        conn.send_msg({"t": "delete_ok", "rel": rel, "backup": backup})
 
     def _commit(self, conn: Conn, message: dict) -> None:
         rel = validate_rel(str(message.get("rel", "")))

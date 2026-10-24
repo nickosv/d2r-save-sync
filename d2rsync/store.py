@@ -51,7 +51,7 @@ class DirectorySave:
             raise SyncIOError(f"{rel} is larger than {MAX_FILE_BYTES} bytes")
         return data
 
-    def write_bytes(self, rel: str, data: bytes, mtime: float) -> None:
+    def write_bytes(self, rel: str, data: bytes, mtime: float) -> str:
         if len(data) > MAX_FILE_BYTES:
             raise SyncIOError(f"{rel} is larger than {MAX_FILE_BYTES} bytes")
         path = self._resolve(rel)
@@ -59,27 +59,36 @@ class DirectorySave:
             raise SyncIOError(f"refusing to follow symlink: {rel}")
         if path.exists() and not path.is_file():
             raise SyncIOError(f"refusing to replace non-file: {rel}")
+        backup = ""
         if path.is_file():
-            self.backups.backup(path, rel)
+            backup = self._relative(self.backups.backup(path, rel))
         temporary = path.with_name(path.name + ".d2rsync-tmp")
         temporary.write_bytes(data)
         os.utime(temporary, (mtime, mtime))
         os.replace(temporary, path)
+        return backup
 
-    def remove(self, rel: str) -> None:
+    def remove(self, rel: str) -> str:
         path = self._resolve(rel)
         if path.is_symlink():
             raise SyncIOError(f"refusing to follow symlink: {rel}")
         if not path.exists():
-            return
+            return ""
         if not path.is_file():
             raise SyncIOError(f"refusing to delete non-file: {rel}")
-        self.backups.backup(path, rel)
+        backup = self._relative(self.backups.backup(path, rel))
         path.unlink()
+        return backup
 
     def archive_conflict(self, rel: str, data: bytes, label: str) -> str:
         dest = self.backups.archive_conflict(rel, data, label)
-        return str(dest)
+        return self._relative(dest)
+
+    def _relative(self, dest: Path) -> str:
+        try:
+            return dest.resolve().relative_to(self.root.resolve()).as_posix()
+        except (OSError, ValueError):
+            return dest.as_posix()
 
     def _resolve(self, rel: str) -> Path:
         name = validate_rel(rel)

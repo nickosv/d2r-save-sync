@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 
 from d2rsync.errors import SyncIOError
@@ -15,10 +16,17 @@ def save_key(path: Path) -> str:
 
 
 class SyncState:
-    def __init__(self, path: Path, folder_key: str, files: dict[str, str] | None = None):
+    def __init__(
+        self,
+        path: Path,
+        folder_key: str,
+        files: dict[str, str] | None = None,
+        synced_at: float | None = None,
+    ):
         self.path = Path(path)
         self.folder_key = folder_key
         self.files: dict[str, str] = dict(files or {})
+        self.synced_at = synced_at
 
     def hash_for(self, rel: str) -> str | None:
         return self.files.get(rel)
@@ -32,11 +40,18 @@ class SyncState:
     def as_dict(self) -> dict[str, str]:
         return dict(self.files)
 
+    def mark_synced(self, when: float | None = None) -> None:
+        self.synced_at = time.time() if when is None else when
+        self.save()
+
     def save(self) -> None:
         payload = _read_document(self.path)
         folders = payload.setdefault("folders", {})
-        if self.files:
-            folders[self.folder_key] = {"files": self.files}
+        if self.files or self.synced_at is not None:
+            folder = {"files": self.files}
+            if self.synced_at is not None:
+                folder["synced_at"] = self.synced_at
+            folders[self.folder_key] = folder
         else:
             folders.pop(self.folder_key, None)
         _atomic_write_json(self.path, payload)
@@ -48,11 +63,16 @@ def load_state(path: Path, save_root: Path) -> SyncState:
     folder = document.get("folders", {}).get(key, {})
     raw = folder.get("files", {}) if isinstance(folder, dict) else {}
     files: dict[str, str] = {}
+    synced_at = None
+    if isinstance(folder, dict):
+        raw_time = folder.get("synced_at")
+        if isinstance(raw_time, (int, float)):
+            synced_at = float(raw_time)
     if isinstance(raw, dict):
         for name, digest in raw.items():
             if isinstance(name, str) and isinstance(digest, str) and is_syncable_name(name):
                 files[name] = digest
-    return SyncState(path, key, files)
+    return SyncState(path, key, files, synced_at)
 
 
 def _read_document(path: Path) -> dict:

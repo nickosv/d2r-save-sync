@@ -11,9 +11,9 @@ from d2rsync.model import Outcome, Resolved
 class SaveStore(Protocol):
     def read_bytes(self, rel: str) -> bytes: ...
 
-    def write_bytes(self, rel: str, data: bytes, mtime: float) -> None: ...
+    def write_bytes(self, rel: str, data: bytes, mtime: float) -> str: ...
 
-    def remove(self, rel: str) -> None: ...
+    def remove(self, rel: str) -> str: ...
 
     def archive_conflict(self, rel: str, data: bytes, label: str) -> str: ...
 
@@ -53,7 +53,7 @@ def execute(
             outcomes.append(Outcome(item.rel, item.op, item.reason, item.conflict))
             continue
         try:
-            detail = _apply(
+            detail, backup_path, archive_path = _apply(
                 local,
                 remote,
                 item,
@@ -64,7 +64,9 @@ def execute(
         except (OSError, SyncIOError) as exc:
             outcomes.append(Outcome(item.rel, "error", str(exc), item.conflict))
             break
-        outcomes.append(Outcome(item.rel, item.op, item.reason, item.conflict, detail))
+        outcomes.append(
+            Outcome(item.rel, item.op, item.reason, item.conflict, detail, backup_path, archive_path)
+        )
     return outcomes
 
 
@@ -75,38 +77,40 @@ def _apply(
     on_synced: OnSynced,
     loser_label_for_local: str,
     loser_label_for_remote: str,
-) -> str:
+) -> tuple[str, str, str]:
     detail = ""
+    backup_path = ""
+    archive_path = ""
     if item.op == "push":
         if item.local is None:
             raise SyncIOError(f"cannot push {item.rel}; it is not on this machine")
         data = local.read_bytes(item.rel)
         if item.archive_loser and item.remote is not None:
             loser = remote.read_bytes(item.rel)
-            local.archive_conflict(item.rel, loser, loser_label_for_remote)
+            archive_path = local.archive_conflict(item.rel, loser, loser_label_for_remote)
             remote.archive_conflict(item.rel, loser, loser_label_for_remote)
             detail = "archived the other machine's copy before replacing it"
-        remote.write_bytes(item.rel, data, item.local.mtime)
+        backup_path = remote.write_bytes(item.rel, data, item.local.mtime) or ""
         on_synced(item.rel, item.local.sha256)
-        return detail
+        return detail, backup_path, archive_path
     if item.op == "pull":
         if item.remote is None:
             raise SyncIOError(f"cannot pull {item.rel}; it is not on the other machine")
         data = remote.read_bytes(item.rel)
         if item.archive_loser and item.local is not None:
             loser = local.read_bytes(item.rel)
-            local.archive_conflict(item.rel, loser, loser_label_for_local)
+            archive_path = local.archive_conflict(item.rel, loser, loser_label_for_local)
             remote.archive_conflict(item.rel, loser, loser_label_for_local)
             detail = "archived this machine's copy before replacing it"
-        local.write_bytes(item.rel, data, item.remote.mtime)
+        backup_path = local.write_bytes(item.rel, data, item.remote.mtime) or ""
         on_synced(item.rel, item.remote.sha256)
-        return detail
+        return detail, backup_path, archive_path
     if item.op == "delete_local":
-        local.remove(item.rel)
+        backup_path = local.remove(item.rel) or ""
         on_synced(item.rel, None)
-        return detail
+        return detail, backup_path, archive_path
     if item.op == "delete_remote":
-        remote.remove(item.rel)
+        backup_path = remote.remove(item.rel) or ""
         on_synced(item.rel, None)
-        return detail
+        return detail, backup_path, archive_path
     raise SyncIOError(f"unknown operation {item.op} for {item.rel}")

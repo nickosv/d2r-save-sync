@@ -20,6 +20,14 @@ SECRET = "cli-test-secret"
 
 
 class CliTests(unittest.TestCase):
+    def test_help_lists_the_window(self):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with self.assertRaises(SystemExit) as caught:
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                main(["--help"])
+        self.assertEqual(caught.exception.code, 0)
+        self.assertIn("gui", stdout.getvalue())
+
     def test_init_path_status_and_sync(self):
         tmp = Path(tempfile.mkdtemp())
         pc = tmp / "pc"

@@ -60,3 +60,5 @@ class Outcome:
     reason: str
     conflict: bool = False
     detail: str = ""
+    backup_path: str = ""
+    archive_path: str = ""

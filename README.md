@@ -4,7 +4,7 @@ Sync **offline** Diablo II: Resurrected saves between a Windows PC and a Steam D
 
 Battle.net online characters are stored on Blizzard's servers. This tool cannot sync those. It syncs the local files offline characters use, plus the small local keymap and controller files an online character leaves behind.
 
-No third-party packages are required. Python 3.9 or newer is enough.
+The command-line tool uses only the Python standard library. Python 3.9 or newer is enough. The optional window needs [PySide6](#graphical-window).
 
 ## What gets synced
 
@@ -81,6 +81,31 @@ Optional, if you want a `d2rsync` command on `PATH`:
 ```bash
 pip install .
 ```
+
+The window is an extra:
+
+```bash
+pip install ".[gui]"
+python3 -m d2rsync
+```
+
+## Graphical window
+
+`python3 -m d2rsync` with no arguments, or `python3 -m d2rsync gui`, opens a Danish window on top of the same sync engine. The command-line subcommands are unchanged. `scripts/d2r-sync.sh` with no arguments still runs `sync`, so an existing Deck shortcut keeps working.
+
+The window is laid out for 1280×800, with large buttons for the Steam Deck touchscreen. Keyboard and Steam Input: Enter activates the focused control, Y or F5 starts a sync from the dashboard, and Escape goes back (from the dashboard it closes the window). A typical Steam Input setup maps A to Enter, B to Escape, and Y to Y.
+
+What the three screens do:
+
+- **Synk** lists each character and the shared stash, with class, level, and the last-modified time on this machine and on the peer. The status badges are Sendes, Hentes, Konflikt, and Opdateret. **Synkroniser nu** connects and syncs. **Prøvekørsel** is a dry run. If D2R is running and blocking is on, the list still loads but the sync button stays disabled.
+- **Resultat** shows the last run. A conflict card explains which copy becomes the live character and which copy is archived. The table lists every other file, the action, and the backup folder.
+- **Indstillinger** sets the save folder, host or connect mode, automatic or manual peer discovery, the peer IP and port, the shared secret, how many days of backups to keep, and whether to block while `D2R.exe` is running.
+
+The window never asks a conflict question on stdin. If the config says `newest`, that policy is used. `keep-both` and `ask` both become keep-both in the window, so the older file is archived and nothing is left for a later prompt. `ask` remains available in the CLI.
+
+In **Forbind** mode, **Synkroniser nu** discovers the peer (or uses the manual IP) and syncs. In **Vær vært** mode the button is **Start vært**: this machine listens, and the other one connects. Network and sync work run off the UI thread.
+
+A preview while the game is open is read-only, so the dashboard can show the table with the button disabled. An actual sync still refuses.
 
 ## First-time setup
 
@@ -178,6 +203,12 @@ chmod +x /home/deck/d2r-save-sync/scripts/d2r-sync.sh
 
 With no arguments the shell script runs `sync`, which is what you want from a shortcut. It pauses for Enter when stdin is a terminal. `D2R_SYNC_NO_PAUSE=1` skips the pause.
 
+To open the window from a checkout that has PySide6 installed:
+
+```bash
+python3 -m d2rsync gui
+```
+
 ### Game Mode shortcut
 
 Switch to Desktop Mode, open Steam, and choose **Games → Add a Non-Steam Game to My Library**. The picker often hides shell scripts, so add any program and then edit it:
@@ -202,7 +233,25 @@ If Konsole is not available, point **Target** at `/bin/bash` and set **Launch Op
 /home/deck/d2r-save-sync/scripts/d2r-sync.sh sync
 ```
 
-The PC must be running `serve` (or the Deck can serve and the PC can sync; either direction works). Discovery uses a UDP broadcast, so both machines need to be on the same LAN. If the Deck is on a guest Wi-Fi that cannot see the PC, set the PC's address in the Deck config:
+### Standalone executable, no Python install
+
+GitHub Actions builds two single-file programs on every push: `D2RSaveSync` for Linux, and `D2RSaveSync.exe` for Windows. Download them from the workflow artifacts. You can also build locally after `pip install -e ".[gui]" pyinstaller`:
+
+```bash
+pyinstaller --noconfirm --clean D2RSaveSync.spec
+```
+
+The Linux build is done on Ubuntu 22.04 so the binary runs on the older glibc in SteamOS. The program still needs the system graphics libraries SteamOS already has for gamescope and XWayland (`libEGL`, `libGL`, `libxkbcommon`, `libxkbcommon-x11`, `libxcb`). It does not need Python or pip on the Deck.
+
+Copy `D2RSaveSync` to the Deck, for example `/home/deck/Applications/D2RSaveSync`, and `chmod +x` it. In Desktop Mode, open Steam and choose **Games → Add a Non-Steam Game to My Library**. Point **Target** at that file and name the entry `D2R Save Sync`. Launch options can stay empty. If the window does not appear, set **Launch Options** to:
+
+```text
+QT_QPA_PLATFORM=xcb %command%
+```
+
+Return to Game Mode. The shortcut is under **Non-Steam**. Quit D2R before syncing. The same file with no arguments opens the window. `D2RSaveSync sync` and the other subcommands still work; on Windows a console is opened for those commands because the executable itself is a windowed program.
+
+The PC must be running `serve` (or the Deck can serve and the PC can sync; either direction works). In the window, one machine uses **Vær vært** and the other uses **Forbind**. Discovery uses a UDP broadcast, so both machines need to be on the same LAN. If the Deck is on a guest Wi-Fi that cannot see the PC, set the PC's address in the Deck config:
 
 ```json
 "peer": "192.168.1.20"
@@ -241,11 +290,15 @@ A dry run connects and prints the plan. It does not write saves or sync state.
   "backup_retention_days": 30,
   "refuse_if_game_running": true,
   "listen_host": "0.0.0.0",
-  "name": null
+  "name": null,
+  "role": "client",
+  "peer_mode": "auto"
 }
 ```
 
 `null` or `""` for `save_path`, `peer`, and `name` means "detect automatically". `name` defaults to the hostname and is shown to the other machine. `peer` may be `192.168.1.20` or `192.168.1.20:41943`.
+
+`role` is `client` or `host`, and `peer_mode` is `auto` or `manual`. The window reads and writes both. The CLI ignores them and still uses `serve` versus `sync`, and `--peer` versus discovery. Older config files without these fields load as client and auto.
 
 `D2R_SYNC_CONFIG_DIR` overrides the directory that holds `config.json` and `state.json`. If you pass `--config /path/to/config.json`, state is stored beside that file instead.
 
@@ -259,6 +312,7 @@ A dry run connects and prints the plan. It does not write saves or sync state.
 | `discover` | Listen for a machine that is running `serve` |
 | `serve` | Wait for the other machine |
 | `sync` | Connect and sync |
+| `gui` | Open the window. This is also what an empty command line does |
 
 Useful flags: `--dry-run`, `--conflict keep-both|ask|newest`, `--peer HOST`, `--save-path PATH`, `--force`, `--once`, `--no-discover`, `--verbose`.
 
@@ -284,7 +338,7 @@ From the repository root:
 python3 -m unittest discover -s tests -v
 ```
 
-The sync and conflict rules are covered without a network. A second set of tests runs a real listener on `127.0.0.1`.
+The sync and conflict rules are covered without a network. A second set of tests runs a real listener on `127.0.0.1`. View-model tests cover the Danish dashboard, the conflict card, and the settings draft without Qt. The window smoke test renders the three screens offscreen and is skipped when PySide6 is not installed. Set `QT_QPA_PLATFORM=offscreen` if you run it over SSH.
 
 ## Troubleshooting
 
@@ -296,4 +350,8 @@ The sync and conflict rules are covered without a network. A second set of tests
 
 **A deleted character came back.** The other machine still had an edited copy, or it had no record of the deletion. Copy the backup out if the restored file is the one you did not want, delete the live file on the machine that should not have it, and sync again while the other copy is unchanged.
 
-**Firewall prompt.** Allow the app on private networks only.
+**Firewall prompt.** Allow the app on private networks only. The standalone executable triggers the same prompt the first time it listens or connects.
+
+**The window says PySide6 is missing.** Install the extra: `pip install 'd2r-save-sync[gui]'`. The CLI does not need it.
+
+**The standalone build opens and closes immediately on the Deck.** Run it once from Konsole. A missing `.so` is almost always a graphics library; SteamOS updates include them. `QT_QPA_PLATFORM=xcb` forces the XWayland backend, which Game Mode already provides.

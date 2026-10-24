@@ -54,6 +54,10 @@ class Log:
 
 
 def main(argv: list[str] | None = None) -> int:
+    args_list = list(sys.argv[1:] if argv is None else argv)
+    if not args_list:
+        return launch_gui()
+    _ensure_windows_console(args_list)
     parser = argparse.ArgumentParser(
         prog="d2rsync",
         description="Sync Diablo II: Resurrected offline saves between a Windows PC and a Steam Deck.",
@@ -65,6 +69,7 @@ def main(argv: list[str] | None = None) -> int:
     common.add_argument("--save-path", help="Save folder, instead of auto-detect or the config")
 
     sub = parser.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("gui", parents=[common], help="Open the graphical window")
 
     init_p = sub.add_parser("init", parents=[common], help="Create a config and a shared secret")
     init_p.add_argument("--secret", help="Use this shared secret instead of generating one")
@@ -97,9 +102,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Sync even if the game appears to be running",
     )
 
-    args = parser.parse_args(argv)
+    args = parser.parse_args(args_list)
     log = Log(verbose=bool(getattr(args, "verbose", False)))
     try:
+        if args.cmd == "gui":
+            return launch_gui()
         if args.cmd == "init":
             return cmd_init(args, log)
         if args.cmd == "path":
@@ -122,6 +129,38 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     log.error(f"unknown command: {args.cmd}")
     return 1
+
+
+def launch_gui() -> int:
+    try:
+        from d2rsync.ui.app import run
+    except ImportError:
+        print(
+            "The graphical window needs PySide6. Install it with: pip install 'd2r-save-sync[gui]'",
+            file=sys.stderr,
+        )
+        return 1
+    return run()
+
+
+def _ensure_windows_console(args_list: list[str]) -> None:
+    """A windowed PyInstaller build has no console until a CLI command asks for one."""
+    if not sys.platform.startswith("win") or not getattr(sys, "frozen", False):
+        return
+    if not args_list or args_list[0] in ("gui", "--help", "-h", "--version"):
+        return
+    try:
+        import ctypes
+
+        kernel = ctypes.windll.kernel32
+        if kernel.GetConsoleWindow():
+            return
+        if not kernel.AllocConsole():
+            return
+        sys.stdout = open("CONOUT$", "w", encoding="utf-8", buffering=1)  # noqa: SIM115
+        sys.stderr = open("CONOUT$", "w", encoding="utf-8", buffering=1)  # noqa: SIM115
+    except OSError:
+        return
 
 
 def cmd_init(args, log: Log) -> int:

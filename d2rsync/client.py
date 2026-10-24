@@ -40,7 +40,7 @@ class RemoteSave:
             raise ProtocolError(f"peer sent damaged bytes for {rel}")
         return data
 
-    def write_bytes(self, rel: str, data: bytes, mtime: float) -> None:
+    def write_bytes(self, rel: str, data: bytes, mtime: float) -> str:
         digest = sha256_bytes(data)
         self.conn.send_msg(
             {"t": "put", "rel": rel, "size": len(data), "mtime": mtime, "sha256": digest}
@@ -49,12 +49,14 @@ class RemoteSave:
         reply = self._ok(self.conn.recv_msg())
         if reply.get("t") != "put_ok" or reply.get("sha256") != digest:
             raise ProtocolError(f"peer did not accept {rel}")
+        return str(reply.get("backup") or "")
 
-    def remove(self, rel: str) -> None:
+    def remove(self, rel: str) -> str:
         self.conn.send_msg({"t": "delete", "rel": rel})
         reply = self._ok(self.conn.recv_msg())
         if reply.get("t") != "delete_ok":
             raise ProtocolError(f"peer did not delete {rel}")
+        return str(reply.get("backup") or "")
 
     def archive_conflict(self, rel: str, data: bytes, label: str) -> str:
         digest = sha256_bytes(data)
@@ -233,6 +235,10 @@ def sync_with_peer(
         remote_files, remote_state, _remote_time = remote.manifest()
         decisions = plan(local_files, remote_files, local_state.as_dict(), remote_state)
         resolved = [_resolve_one(item, conflict, dry_run, chooser) for item in decisions]
+        notes["decisions"] = decisions
+        notes["local_d2s"] = {}
+        notes["remote_d2s"] = {}
+        _remember_conflict_characters(notes, decisions, local_root, local_files, remote_files, remote)
 
         def on_synced(rel: str, digest: str | None) -> None:
             local_state.set_hash(rel, digest)
@@ -250,9 +256,51 @@ def sync_with_peer(
         )
         if not dry_run and not any(item.op == "error" for item in outcomes):
             backups.prune()
+            local_state.mark_synced()
         return resolved, outcomes, notes
     finally:
         remote.close()
+
+
+def _remember_conflict_characters(notes, decisions, local_root, local_files, remote_files, remote) -> None:
+    """Keep both levels for the result card. Reading them must not fail the sync."""
+    import re
+
+    from d2rsync.d2s import read_local_d2s
+
+    def stem(filename: str) -> str:
+        lower = filename.lower()
+        for suffix in (".d2s", ".key", ".keyo", ".ctl", ".ctlo", ".map"):
+            if lower.endswith(suffix) and len(filename) > len(suffix):
+                return filename[: -len(suffix)]
+        match = re.match(r"^(?P<stem>.+)\.ma\d+$", filename, re.IGNORECASE)
+        if match:
+            return match.group("stem")
+        return filename
+
+    groups = {stem(item.rel).casefold() for item in decisions if item.action == "conflict"}
+    names = []
+    seen: set[str] = set()
+    if groups:
+        for name in list(local_files) + list(remote_files):
+            if name.lower().endswith(".d2s") and stem(name).casefold() in groups and name not in seen:
+                seen.add(name)
+                names.append(name)
+    if not names:
+        return
+    try:
+        local_bytes = read_local_d2s(local_root)
+    except OSError:
+        local_bytes = {}
+    for name in names:
+        if name in local_bytes:
+            notes["local_d2s"][name] = local_bytes[name]
+        if name not in remote_files:
+            continue
+        try:
+            notes["remote_d2s"][name] = remote.read_bytes(name)
+        except (OSError, ProtocolError, SyncIOError):
+            continue
 
 
 def _resolve_one(decision: Decision, conflict: str, dry_run: bool, chooser) -> Resolved:

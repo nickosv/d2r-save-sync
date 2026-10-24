@@ -29,6 +29,8 @@ class Config:
     refuse_if_game_running: bool = True
     listen_host: str = "0.0.0.0"
     name: str | None = None
+    role: str = "client"
+    peer_mode: str = "auto"
     path: Path | None = None
 
     def secret_value(self) -> str:
@@ -101,6 +103,8 @@ def write_config(cfg: Config, path: Path | None = None) -> Path:
         "refuse_if_game_running": cfg.refuse_if_game_running,
         "listen_host": cfg.listen_host,
         "name": cfg.name,
+        "role": cfg.role,
+        "peer_mode": cfg.peer_mode,
     }
     file_path.parent.mkdir(parents=True, exist_ok=True)
     blob = (json.dumps(payload, indent=2) + "\n").encode("utf-8")
@@ -197,6 +201,14 @@ def _from_dict(raw: dict, path: Path) -> Config:
         cfg.refuse_if_game_running = bool(raw["refuse_if_game_running"])
     if raw.get("listen_host"):
         cfg.listen_host = str(raw["listen_host"])
+    role = _optional_str(raw.get("role")) or "client"
+    if role not in ("client", "host"):
+        raise ConfigError("role must be client or host")
+    cfg.role = role
+    peer_mode = _optional_str(raw.get("peer_mode")) or "auto"
+    if peer_mode not in ("auto", "manual"):
+        raise ConfigError("peer_mode must be auto or manual")
+    cfg.peer_mode = peer_mode
     return cfg
 
 
