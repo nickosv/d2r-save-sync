@@ -162,8 +162,14 @@ def discover(
     timeout: float = 2.0,
     nonce: str | None = None,
     extra_targets: list[tuple[str, int]] | None = None,
+    broadcast: bool = True,
 ) -> list[Peer]:
-    """Broadcast a probe and collect announcements that echo our nonce."""
+    """Collect announcements that echo our nonce.
+
+    By default this also broadcasts on the LAN. A directed probe passes
+    ``broadcast=False`` and puts the one host in ``extra_targets``, so a
+    reply from some other address cannot be mistaken for that host.
+    """
     import secrets
     import time
 
@@ -178,8 +184,10 @@ def discover(
         sock.bind(("", 0))
         payload = encode_discover(token)
         deadline = time.monotonic() + timeout
-        targets = [("255.255.255.255", discover_port)]
-        targets.extend(broadcast_targets(discover_port))
+        targets: list[tuple[str, int]] = []
+        if broadcast:
+            targets.append(("255.255.255.255", discover_port))
+            targets.extend(broadcast_targets(discover_port))
         if extra_targets:
             targets.extend(extra_targets)
         next_send = 0.0
@@ -210,16 +218,49 @@ def discover(
 
 
 def probe(host: str, discover_port: int, *, timeout: float = 1.0, nonce: str | None = None) -> Peer | None:
+    """Ask one host. The reply has to come from that host.
+
+    A broadcast probe of this same machine is answered from the LAN address
+    as well as from loopback. Those are different peers. Returning whichever
+    reply sorts first would report the LAN address for a loopback probe on
+    some networks (``10.1.0.54`` sorts before ``127.0.0.1``) and could also
+    return a different PC. LAN discovery stays on :func:`discover`.
+    """
     found = discover(
         discover_port,
         timeout=timeout,
         nonce=nonce,
         extra_targets=[(host, discover_port)],
+        broadcast=False,
     )
-    for peer in found:
-        if peer.host == host or host in ("127.0.0.1", "localhost"):
+    return _matching_peer(found, host)
+
+
+def _matching_peer(peers: list[Peer], host: str) -> Peer | None:
+    acceptable = _probe_sources(host)
+    for peer in peers:
+        if peer.host in acceptable:
             return peer
-    return found[0] if found else None
+    return None
+
+
+def _probe_sources(host: str) -> set[str]:
+    """Addresses that count as a reply from ``host``.
+
+    ``localhost`` and ``127.0.0.1`` are the same target: the packet comes
+    back from the numeric address. A DNS name counts when the reply source
+    is one of its IPv4 addresses.
+    """
+    if host in ("127.0.0.1", "localhost"):
+        return {"127.0.0.1", "localhost"}
+    found = {host}
+    try:
+        infos = socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_DGRAM)
+    except socket.gaierror:
+        return found
+    for info in infos:
+        found.add(info[4][0])
+    return found
 
 
 def broadcast_targets(discover_port: int) -> list[tuple[str, int]]:
