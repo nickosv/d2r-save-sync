@@ -741,7 +741,7 @@ class MainWindow(QMainWindow):
             headers,
             records,
             [4, 3, 3, 3, 3],
-            "Ingen karakterer i gemmemappen endnu.",
+            view.empty_text,
         )
         self.sync_btn.setText("⟳  " + view.button_text)
         self.sync_btn.setEnabled(view.button_enabled)
@@ -1113,11 +1113,9 @@ class MainWindow(QMainWindow):
 
     def _current_save_text(self) -> Path | None:
         text = self.path_edit.text().strip()
-        if text:
-            path = Path(text)
-            if path.is_dir():
-                return path
-        if self.save_folder is not None and self.save_folder.is_dir():
+        if text and _is_dir(Path(text)):
+            return Path(text)
+        if self.save_folder is not None and _is_dir(self.save_folder):
             return self.save_folder
         return None
 
@@ -1228,13 +1226,25 @@ class MainWindow(QMainWindow):
         event.accept()
 
 
-def resolve_save_folder(save_path: str | None) -> Path:
-    locations = detect_save_folders()
-    override = Path(save_path) if save_path else None
+def _is_dir(path: Path) -> bool:
     try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
+def resolve_save_folder(save_path: str | None) -> Path:
+    try:
+        locations = detect_save_folders()
+        override = Path(save_path) if save_path else None
         return choose_save_folder(locations, override)
     except FileNotFoundError as exc:
         raise SavePathError(str(exc)) from exc
+    except OSError as exc:
+        raise SavePathError(
+            "could not find a Diablo II Resurrected save folder. "
+            "Set save_path in the config file."
+        ) from exc
 
 
 def locate_peer(peer_mode: str, peer: str | None, port: int, discover_port: int) -> tuple[str, int]:

@@ -6,13 +6,14 @@ import unittest
 from datetime import datetime
 
 from d2rsync.config import Config
-from d2rsync.errors import ConfigError, D2RSyncError, GameRunningError
+from d2rsync.errors import ConfigError, D2RSyncError, GameRunningError, SavePathError
 from d2rsync.model import Decision, Entry, Outcome
 from d2rsync.viewmodel import (
     apply_draft,
     build_result_view,
     build_rows,
     conflict_character_d2s,
+    MISSING_SAVE_FOLDER,
     danish_error,
     draft_from_config,
     format_da_time,
@@ -346,6 +347,46 @@ class ErrorTextTests(unittest.TestCase):
         self.assertIn("hemmelighed", danish_error(D2RSyncError("shared secret rejected")))
         self.assertIn("modpart", danish_error(D2RSyncError("no peer answered")))
         self.assertIn("IP-adressen", danish_error(D2RSyncError("no peer address configured")))
+        missing = SavePathError(
+            "could not find a Diablo II Resurrected save folder. Set save_path in the config file."
+        )
+        self.assertEqual(danish_error(missing), MISSING_SAVE_FOLDER)
+        view = make_dashboard_view(
+            rows=[],
+            peer_name="",
+            peer_host="",
+            connected=False,
+            searching=False,
+            role="client",
+            hosting=False,
+            game_running=False,
+            peer_game_running=False,
+            block_game=True,
+            busy=False,
+            has_secret=True,
+            has_save=False,
+            synced_at=None,
+            now=NOW,
+        )
+        self.assertEqual(view.empty_text, MISSING_SAVE_FOLDER)
+        searching = make_dashboard_view(
+            rows=[],
+            peer_name="",
+            peer_host="",
+            connected=False,
+            searching=True,
+            role="client",
+            hosting=False,
+            game_running=False,
+            peer_game_running=False,
+            block_game=True,
+            busy=False,
+            has_secret=True,
+            has_save=False,
+            synced_at=None,
+            now=NOW,
+        )
+        self.assertNotEqual(searching.empty_text, MISSING_SAVE_FOLDER)
 
 
 if __name__ == "__main__":

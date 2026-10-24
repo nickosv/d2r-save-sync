@@ -355,7 +355,13 @@ def _state_file(args) -> Path:
 
 
 def _save_choice(cfg):
-    locations = detect_save_folders()
+    try:
+        locations = detect_save_folders()
+    except OSError as exc:
+        raise SavePathError(
+            "could not find a Diablo II Resurrected save folder. "
+            "Set save_path in the config file."
+        ) from exc
     override = Path(cfg.save_path) if cfg.save_path else None
     try:
         chosen = choose_save_folder(locations, override)

@@ -155,6 +155,77 @@ class DetectTests(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             choose_save_folder([], home / "missing")
 
+    def test_unreadable_removable_mount_is_skipped(self):
+        home = Path(self._tmp())
+        media = home / "media"
+        saves = self._prefix(media / "mmcblk0p1", "42")
+        write_file(saves, "Hero.d2s", b"sd", 8)
+        locked = media / "root"
+        locked.mkdir(parents=True)
+        (locked / "steamapps").mkdir()
+        locked.chmod(0)
+        try:
+            found = detect_save_folders(
+                platform="linux",
+                home=home,
+                environ={},
+                steam_roots=[],
+                scan_removable=True,
+                media_root=media,
+            )
+        finally:
+            locked.chmod(0o700)
+        self.assertEqual([item.path.resolve() for item in found], [saves.resolve()])
+
+    def test_unreadable_library_does_not_hide_another_save(self):
+        home = Path(self._tmp())
+        steam = home / ".local" / "share" / "Steam"
+        saves = self._prefix(steam, "1")
+        write_file(saves, "Hero.d2s", b"ok", 4)
+        blocked = home / "blocked"
+        blocked.mkdir()
+        (blocked / "steamapps").mkdir()
+        blocked.chmod(0)
+        missing = home / "not-there"
+        try:
+            found = detect_save_folders(
+                platform="linux",
+                home=home,
+                environ={},
+                steam_roots=[steam, blocked, missing],
+                scan_removable=False,
+            )
+        finally:
+            blocked.chmod(0o700)
+        self.assertEqual([item.path.resolve() for item in found], [saves.resolve()])
+
+    def test_unreadable_proton_prefix_is_skipped(self):
+        home = Path(self._tmp())
+        steam = home / ".local" / "share" / "Steam"
+        saves = self._prefix(steam, "1")
+        write_file(saves, "Hero.d2s", b"ok", 6)
+        locked = steam / "steamapps" / "compatdata" / "locked"
+        locked.mkdir()
+        locked.chmod(0)
+        try:
+            found = detect_save_folders(
+                platform="linux",
+                home=home,
+                environ={},
+                steam_roots=[steam],
+                scan_removable=False,
+            )
+        finally:
+            locked.chmod(0o700)
+        self.assertEqual([item.path.resolve() for item in found], [saves.resolve()])
+
+    def test_no_readable_save_folder_is_a_clear_error(self):
+        with self.assertRaises(FileNotFoundError) as caught:
+            choose_save_folder([])
+        message = str(caught.exception).lower()
+        self.assertIn("could not find", message)
+        self.assertIn("save", message)
+
     def test_known_appid_breaks_a_tie_when_mtimes_match(self):
         home = Path(self._tmp())
         steam = home / ".local" / "share" / "Steam"

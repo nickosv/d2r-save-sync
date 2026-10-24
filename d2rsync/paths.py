@@ -45,6 +45,7 @@ def detect_save_folders(
     environ: dict | None = None,
     steam_roots: list[Path] | None = None,
     scan_removable: bool = True,
+    media_root: Path | None = None,
 ) -> list[SaveLocation]:
     """Return every existing save folder, best candidate first."""
     platform = platform if platform is not None else sys.platform
@@ -61,14 +62,17 @@ def detect_save_folders(
     else:
         roots = steam_roots if steam_roots is not None else default_steam_roots(home, env)
         if scan_removable:
-            roots = list(roots) + removable_library_roots()
+            roots = list(roots) + removable_library_roots(media_root)
         seen: set[str] = set()
         for root in roots:
             key = os.path.normcase(str(Path(root)))
             if key in seen:
                 continue
             seen.add(key)
-            found.extend(_proton_locations(Path(root)))
+            try:
+                found.extend(_proton_locations(Path(root)))
+            except OSError:
+                continue
 
     unique: dict[str, SaveLocation] = {}
     for location in found:
@@ -85,7 +89,7 @@ def detect_save_folders(
 def choose_save_folder(locations: list[SaveLocation], override: Path | None = None) -> Path:
     if override is not None:
         path = Path(override)
-        if not path.is_dir():
+        if not _safe_is_dir(path):
             raise FileNotFoundError(f"save path does not exist: {path}")
         return path
     if not locations:
@@ -111,9 +115,9 @@ def default_steam_roots(home: Path, environ: dict | None = None) -> list[Path]:
     seen: set[str] = set()
 
     def add(path: Path) -> None:
-        if not path.is_dir():
+        if not _safe_is_dir(path):
             return
-        key = os.path.normcase(str(path.resolve())) if path.exists() else os.path.normcase(str(path))
+        key = _path_key(path)
         if key in seen:
             return
         seen.add(key)
@@ -126,21 +130,30 @@ def default_steam_roots(home: Path, environ: dict | None = None) -> list[Path]:
     return roots
 
 
-def removable_library_roots() -> list[Path]:
-    """SD card and other Steam libraries mounted by SteamOS."""
-    mounts: list[Path] = []
-    media = Path("/run/media")
-    if media.is_dir():
-        mounts.append(media / "mmcblk0p1")
-        deck = media / "deck"
-        if deck.is_dir():
-            mounts.extend(path for path in deck.iterdir() if path.is_dir())
-        mounts.extend(path for path in media.iterdir() if path.is_dir() and path.name != "deck")
+def removable_library_roots(media: Path | None = None) -> list[Path]:
+    """SD card and other Steam libraries mounted by SteamOS.
+
+    ``media`` defaults to ``/run/media``. An unreadable mount is skipped.
+    """
+    root = Path("/run/media") if media is None else Path(media)
+    if not _safe_is_dir(root):
+        return []
+    mounts: list[Path] = [root / "mmcblk0p1"]
+    deck = root / "deck"
+    if _safe_is_dir(deck):
+        mounts.extend(path for path in _safe_iterdir(deck) if _safe_is_dir(path))
+    mounts.extend(path for path in _safe_iterdir(root) if path.name != "deck" and _safe_is_dir(path))
     roots: list[Path] = []
+    seen: set[str] = set()
     for mount in mounts:
         for candidate in (mount, mount / "SteamLibrary", mount / "steamapps"):
-            if _compatdata_dir(candidate) is not None:
-                roots.append(candidate)
+            key = os.path.normcase(str(candidate))
+            if key in seen:
+                continue
+            if _compatdata_dir(candidate) is None:
+                continue
+            seen.add(key)
+            roots.append(candidate)
     return roots
 
 
@@ -151,7 +164,11 @@ def libraries_from_steam_root(steam_root: Path) -> list[Path]:
         Path("config") / "libraryfolders.vdf",
     ):
         vdf = steam_root / relative
-        if vdf.is_file():
+        try:
+            readable = vdf.is_file()
+        except OSError:
+            continue
+        if readable:
             try:
                 text = vdf.read_text(encoding="utf-8", errors="replace")
             except OSError:
@@ -185,7 +202,7 @@ def _windows_locations(profile: Path) -> list[SaveLocation]:
     locations = []
     for tail in _PROFILE_TAILS:
         path = _descend(profile, tail)
-        if path is None or not path.is_dir():
+        if path is None or not _safe_is_dir(path):
             continue
         count, newest = _summarize(path)
         kind = "windows-documents" if tail[0].lower() == "documents" else "windows"
@@ -200,46 +217,41 @@ def _proton_locations(root: Path) -> list[SaveLocation]:
     if compat is None:
         return []
     locations: list[SaveLocation] = []
-    try:
-        prefixes = list(compat.iterdir())
-    except OSError:
-        return []
-    for prefix in prefixes:
-        if not prefix.is_dir():
-            continue
-        users = prefix / "pfx" / "drive_c" / "users"
-        if not users.is_dir():
-            # Case-insensitive fallback for unusual prefixes.
-            drive = _descend(prefix, ("pfx", "drive_c", "users"))
-            if drive is None:
-                continue
-            users = drive
+    for prefix in _safe_iterdir(compat):
         try:
-            user_dirs = list(users.iterdir())
+            if not _safe_is_dir(prefix):
+                continue
+            users = prefix / "pfx" / "drive_c" / "users"
+            if not _safe_is_dir(users):
+                # Case-insensitive fallback for unusual prefixes.
+                drive = _descend(prefix, ("pfx", "drive_c", "users"))
+                if drive is None:
+                    continue
+                users = drive
+            for user_dir in _safe_iterdir(users):
+                if not _safe_is_dir(user_dir):
+                    continue
+                for tail in _PROFILE_TAILS:
+                    path = _descend(user_dir, tail)
+                    if path is None or not _safe_is_dir(path):
+                        continue
+                    count, newest = _summarize(path)
+                    kind = "proton-documents" if tail[0].lower() == "documents" else "proton"
+                    locations.append(
+                        SaveLocation(path, kind, prefix.name, count, newest, user_dir.name)
+                    )
         except OSError:
             continue
-        for user_dir in user_dirs:
-            if not user_dir.is_dir():
-                continue
-            for tail in _PROFILE_TAILS:
-                path = _descend(user_dir, tail)
-                if path is None or not path.is_dir():
-                    continue
-                count, newest = _summarize(path)
-                kind = "proton-documents" if tail[0].lower() == "documents" else "proton"
-                locations.append(
-                    SaveLocation(path, kind, prefix.name, count, newest, user_dir.name)
-                )
     return locations
 
 
 def _compatdata_dir(root: Path) -> Path | None:
-    if not root.is_dir():
+    if not _safe_is_dir(root):
         return None
     nested = root / "steamapps" / "compatdata"
-    if nested.is_dir():
+    if _safe_is_dir(nested):
         return nested
-    if root.name.lower() == "steamapps" and (root / "compatdata").is_dir():
+    if root.name.lower() == "steamapps" and _safe_is_dir(root / "compatdata"):
         return root / "compatdata"
     return None
 
@@ -255,29 +267,25 @@ def _descend(start: Path, parts: tuple[str, ...]) -> Path | None:
 
 
 def _child_ci(parent: Path, name: str) -> Path | None:
-    if not parent.is_dir():
+    if not _safe_is_dir(parent):
         return None
     direct = parent / name
-    if direct.exists():
+    if _safe_exists(direct):
         return direct
-    try:
-        for entry in parent.iterdir():
-            if entry.name.lower() == name.lower():
-                return entry
-    except OSError:
-        return None
+    for entry in _safe_iterdir(parent):
+        if entry.name.lower() == name.lower():
+            return entry
     return None
 
 
 def _summarize(path: Path) -> tuple[int, float]:
     count = 0
     newest = 0.0
-    try:
-        children = list(path.iterdir())
-    except OSError:
-        return 0, 0.0
-    for child in children:
-        if not child.is_file() or child.is_symlink():
+    for child in _safe_iterdir(path):
+        try:
+            if not child.is_file() or child.is_symlink():
+                continue
+        except OSError:
             continue
         if not is_syncable_name(child.name):
             continue
@@ -287,6 +295,36 @@ def _summarize(path: Path) -> tuple[int, float]:
         except OSError:
             continue
     return count, newest
+
+
+def _safe_is_dir(path: Path) -> bool:
+    """False when the path is missing or this user cannot stat it."""
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
+def _safe_exists(path: Path) -> bool:
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
+def _safe_iterdir(path: Path) -> list[Path]:
+    try:
+        return list(path.iterdir())
+    except OSError:
+        return []
+
+
+def _path_key(path: Path) -> str:
+    try:
+        resolved = path.resolve()
+    except OSError:
+        resolved = path
+    return os.path.normcase(str(resolved))
 
 
 def _unescape_vdf(value: str) -> str:

@@ -75,6 +75,33 @@ class BackupTests(unittest.TestCase):
         self.assertFalse(old.exists())
         self.assertTrue(fresh.exists())
 
+    def test_unreadable_snapshot_does_not_stop_pruning(self):
+        root = Path(self._tmp())
+        save = root / "saves"
+        snapshots = save / ".d2r-sync-backups" / "snapshots"
+        snapshots.mkdir(parents=True)
+        now = datetime(2026, 10, 24, tzinfo=timezone.utc)
+        old = snapshots / "old"
+        locked = snapshots / "locked"
+        fresh = snapshots / "fresh"
+        old.mkdir()
+        locked.mkdir()
+        fresh.mkdir()
+        os.utime(old, ((now - timedelta(days=40)).timestamp(),) * 2)
+        os.utime(locked, ((now - timedelta(days=40)).timestamp(),) * 2)
+        os.utime(fresh, ((now - timedelta(days=1)).timestamp(),) * 2)
+        locked.chmod(0)
+        try:
+            removed = BackupManager(
+                save, retention_count=20, retention_days=30, clock=lambda: now
+            ).prune()
+        finally:
+            locked.chmod(0o700)
+        self.assertFalse(old.exists())
+        self.assertTrue(locked.exists())
+        self.assertTrue(fresh.exists())
+        self.assertEqual([path.name for path in removed], ["old"])
+
     def _tmp(self) -> str:
         import tempfile
 

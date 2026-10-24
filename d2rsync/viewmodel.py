@@ -20,6 +20,8 @@ _MONTHS = ("jan", "feb", "mar", "apr", "maj", "jun", "jul", "aug", "sep", "okt",
 _SUFFIXES = (".d2s", ".key", ".keyo", ".ctl", ".ctlo", ".map")
 _MA = re.compile(r"^(?P<stem>.+)\.ma\d+$", re.IGNORECASE)
 
+MISSING_SAVE_FOLDER = "Gemmemappen blev ikke fundet. Vælg den under Indstillinger."
+
 STATUS_LABELS = {
     "send": "↑ Sendes",
     "get": "↓ Hentes",
@@ -55,6 +57,7 @@ class DashboardView:
     button_enabled: bool
     button_text: str
     footer: str
+    empty_text: str
 
 
 @dataclass(frozen=True)
@@ -259,6 +262,10 @@ def make_dashboard_view(
             "Diablo II: Resurrected kører på den anden enhed. Luk spillet dér før synkronisering."
         )
     header = peer_name if peer_name else "Modpart"
+    if has_save or searching:
+        empty_text = "Ingen karakterer i gemmemappen endnu."
+    else:
+        empty_text = MISSING_SAVE_FOLDER
     return DashboardView(
         pill_text=pill_text,
         pill_kind=pill_kind,
@@ -268,6 +275,7 @@ def make_dashboard_view(
         button_enabled=button.enabled,
         button_text=button.text,
         footer=format_footer(synced_at, now),
+        empty_text=empty_text,
     )
 
 
@@ -429,8 +437,10 @@ def danish_error(exc: BaseException) -> str:
         return "Ingen entydig modpart svarede. Start den anden enhed, eller angiv IP under Indstillinger."
     if "could not connect" in lowered or "connection" in lowered:
         return "Kunne ikke forbinde. Tjek IP, port og at værten kører."
-    if "save" in lowered and ("not find" in lowered or "does not exist" in lowered or "could not find" in lowered):
-        return "Gemmemappen blev ikke fundet. Vælg den under Indstillinger."
+    if name == "SavePathError" or (
+        "save" in lowered and ("not find" in lowered or "does not exist" in lowered or "could not find" in lowered)
+    ):
+        return MISSING_SAVE_FOLDER
     return text
 
 
