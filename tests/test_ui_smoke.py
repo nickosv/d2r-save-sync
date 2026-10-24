@@ -35,6 +35,25 @@ class WindowSmokeTests(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
         prepare(cls.app)
 
+    @classmethod
+    def tearDownClass(cls):
+        # Qt 6.12's offscreen plugin segfaults (exit 139) while Python is
+        # destroying QApplication at interpreter shutdown. The tests have
+        # already passed by then, but the CI job still fails. Delete the
+        # application while the platform plugin is alive.
+        app = getattr(cls, "app", None)
+        cls.app = None
+        if app is None:
+            return
+        import shiboken6
+
+        app.closeAllWindows()
+        for widget in list(app.allWidgets()):
+            widget.deleteLater()
+        app.processEvents()
+        if shiboken6.isValid(app):
+            shiboken6.delete(app)
+
     def test_three_screens_render_the_mockup_state(self):
         from PySide6.QtCore import Qt
         from PySide6.QtTest import QTest
