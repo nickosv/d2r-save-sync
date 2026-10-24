@@ -275,6 +275,7 @@ def cmd_serve(args, log: Log) -> int:
         refuse_if_game_running=cfg.refuse_if_game_running,
         discover=not args.no_discover,
         once=args.once,
+        exclude_characters=cfg.exclude_characters,
         log=log,
     )
     log.info(f"Save folder: {chosen}")
@@ -328,6 +329,7 @@ def cmd_sync(args, log: Log) -> int:
         name=name,
         chooser=_chooser if cfg.conflict == "ask" and not args.dry_run else None,
         log=log,
+        exclude_characters=cfg.exclude_characters,
     )
     peer_name = notes.get("peer_name") or host
     log.info(f"Connected to {peer_name}")

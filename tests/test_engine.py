@@ -116,9 +116,9 @@ class EngineTests(unittest.TestCase):
         write_file(self.local_root, "Hero.d2s", b"hero", 10)
         write_file(self.local_root, "Hero.key", b"keys", 10)
         write_file(self.local_root, "Hero.ma0", b"map", 10)
-        write_file(self.local_root, "Hero.ctlo", b"pad", 10)
+        write_file(self.local_root, "Hero.ctl", b"pad", 10)
         self._sync("newest")
-        for name in ("Hero.d2s", "Hero.key", "Hero.ma0", "Hero.ctlo"):
+        for name in ("Hero.d2s", "Hero.key", "Hero.ma0", "Hero.ctl"):
             self.assertEqual((self.remote_root / name).read_bytes(), (self.local_root / name).read_bytes())
 
     def _sync(self, policy: str, *, dry_run: bool = False, choices: dict | None = None):

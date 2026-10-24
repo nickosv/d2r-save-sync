@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "d2r-save-sync"
-version = "0.2.1"
+version = "0.2.2"
 description = "Sync Diablo II: Resurrected offline saves between a Windows PC and a Steam Deck over the LAN"
 readme = "README.md"
 requires-python = ">=3.9"

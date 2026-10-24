@@ -16,6 +16,15 @@ from d2rsync.errors import AuthError, GameRunningError, ProtocolError, SyncIOErr
 from d2rsync.game import game_is_running
 from d2rsync.hashing import sha256_bytes
 from d2rsync.model import Decision, Entry, Outcome, Resolved
+from d2rsync.names import (
+    block_list,
+    character_stem,
+    list_save_filenames,
+    load_d2s_bytes,
+    omit_blocked,
+    online_character_names,
+    protocol_names,
+)
 from d2rsync.plan import plan, resolve
 from d2rsync.protocol import PROTOCOL_VERSION, Conn
 from d2rsync.state import load_state
@@ -185,6 +194,7 @@ def sync_with_peer(
     chooser=None,
     game_check=None,
     log=None,
+    exclude_characters=None,
 ) -> tuple[list[Resolved], list[Outcome], dict]:
     """Sync `local_root` with the peer. Returns the plan, outcomes, and notes."""
     log = log or _NullLog()
@@ -212,7 +222,16 @@ def sync_with_peer(
     remote = RemoteSave(conn)
     notes: dict = {"peer_name": host}
     try:
-        conn.send_msg({"t": "ready", "force": force, "game_running": bool(running)})
+        offered = _local_block_list(local_root, exclude_characters)
+        conn.send_msg(
+            {
+                "t": "ready",
+                "force": force,
+                "game_running": bool(running),
+                "mode": "dry-run" if dry_run else "sync",
+                "exclude": offered,
+            }
+        )
         ready = remote._ok(conn.recv_msg())
         if ready.get("t") != "ready_ok":
             raise ProtocolError("peer did not finish the handshake")
@@ -233,7 +252,10 @@ def sync_with_peer(
         if ready.get("game_running"):
             log.warn("the game appears to be running on the other machine; continuing")
         remote_files, remote_state, _remote_time = remote.manifest()
-        decisions = plan(local_files, remote_files, local_state.as_dict(), remote_state)
+        blocked = block_list(offered, protocol_names(ready.get("exclude")))
+        local_files, local_state_map = omit_blocked(local_files, local_state.as_dict(), blocked)
+        remote_files, remote_state = omit_blocked(remote_files, remote_state, blocked)
+        decisions = plan(local_files, remote_files, local_state_map, remote_state)
         resolved = [_resolve_one(item, conflict, dry_run, chooser) for item in decisions]
         notes["decisions"] = decisions
         notes["local_d2s"] = {}
@@ -262,21 +284,18 @@ def sync_with_peer(
         remote.close()
 
 
+def _local_block_list(local_root: Path, exclude_characters) -> list[str]:
+    filenames = list_save_filenames(local_root)
+    online = online_character_names(filenames, load_d2s_bytes(local_root, filenames))
+    return block_list(list(exclude_characters or []), online)
+
+
 def _remember_conflict_characters(notes, decisions, local_root, local_files, remote_files, remote) -> None:
     """Keep both levels for the result card. Reading them must not fail the sync."""
-    import re
-
     from d2rsync.d2s import read_local_d2s
 
     def stem(filename: str) -> str:
-        lower = filename.lower()
-        for suffix in (".d2s", ".key", ".keyo", ".ctl", ".ctlo", ".map"):
-            if lower.endswith(suffix) and len(filename) > len(suffix):
-                return filename[: -len(suffix)]
-        match = re.match(r"^(?P<stem>.+)\.ma\d+$", filename, re.IGNORECASE)
-        if match:
-            return match.group("stem")
-        return filename
+        return character_stem(filename) or filename
 
     groups = {stem(item.rel).casefold() for item in decisions if item.action == "conflict"}
     names = []

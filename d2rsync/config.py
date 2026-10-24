@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from d2rsync.errors import ConfigError
+from d2rsync.names import MAX_CHARACTER_NAME_LENGTH, MAX_CHARACTER_NAMES
 from d2rsync.plan import POLICIES
 
 DEFAULT_PORT = 41943
@@ -31,7 +32,12 @@ class Config:
     name: str | None = None
     role: str = "client"
     peer_mode: str = "auto"
+    exclude_characters: list[str] | None = None
     path: Path | None = None
+
+    def __post_init__(self) -> None:
+        if self.exclude_characters is None:
+            self.exclude_characters = []
 
     def secret_value(self) -> str:
         env = os.environ.get("D2R_SYNC_SECRET")
@@ -105,6 +111,7 @@ def write_config(cfg: Config, path: Path | None = None) -> Path:
         "name": cfg.name,
         "role": cfg.role,
         "peer_mode": cfg.peer_mode,
+        "exclude_characters": list(cfg.exclude_characters or []),
     }
     file_path.parent.mkdir(parents=True, exist_ok=True)
     blob = (json.dumps(payload, indent=2) + "\n").encode("utf-8")
@@ -209,6 +216,7 @@ def _from_dict(raw: dict, path: Path) -> Config:
     if peer_mode not in ("auto", "manual"):
         raise ConfigError("peer_mode must be auto or manual")
     cfg.peer_mode = peer_mode
+    cfg.exclude_characters = _character_names(raw.get("exclude_characters"))
     return cfg
 
 
@@ -229,6 +237,35 @@ def _positive(value: int, label: str) -> int:
     if int(value) < 1:
         raise ConfigError(f"{label} must be at least 1")
     return int(value)
+
+
+def _character_names(value) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ConfigError("exclude_characters must be a list of character names")
+    names: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            raise ConfigError("exclude_characters must be a list of character names")
+        text = item.strip()
+        if (
+            not text
+            or len(text) > MAX_CHARACTER_NAME_LENGTH
+            or "/" in text
+            or "\\" in text
+            or text.startswith(".")
+        ):
+            raise ConfigError(f"character name is not valid: {item}")
+        key = text.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        names.append(text)
+        if len(names) > MAX_CHARACTER_NAMES:
+            raise ConfigError(f"exclude at most {MAX_CHARACTER_NAMES} characters")
+    return names
 
 
 def _check_secret(secret: str) -> None:

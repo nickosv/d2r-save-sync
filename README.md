@@ -2,7 +2,7 @@
 
 Sync **offline** Diablo II: Resurrected saves between a Windows PC and a Steam Deck over the home LAN. The same Python program runs on both machines. One side listens, the other connects, and each file is copied only when its contents actually changed.
 
-Battle.net online characters are stored on Blizzard's servers. This tool cannot sync those. It syncs the local files offline characters use, plus the small local keymap and controller files an online character leaves behind.
+Battle.net online characters are stored on Blizzard's servers. This tool never syncs them. An online character is recognized when the save folder has its `.keyo` or `.ctlo` file and no `.d2s`. Those sidecars stay on the machine that has them. If either machine sees a character as online, both sides leave that name alone. Offline characters (a `.d2s`, even if a `.keyo` sits beside it) still sync, except for the online sidecar itself. Settings also has a checkbox for each character; a checked name is left alone on both machines.
 
 The command-line tool uses only the Python standard library. Python 3.9 or newer is enough. The optional window needs [PySide6](#graphical-window).
 
@@ -13,12 +13,12 @@ Files are read from the top of the save folder only:
 | File | Role |
 | --- | --- |
 | `Character.d2s` | Offline character |
-| `Character.key`, `Character.keyo` | Key bindings |
-| `Character.ctl`, `Character.ctlo` | Controller layout |
+| `Character.key` | Offline key bindings |
+| `Character.ctl` | Offline controller layout |
 | `Character.ma0`, `Character.ma1`, … and `Character.map` | Automap / map progress |
 | `SharedStashSoftCoreV2.d2i`, `SharedStashHardCoreV2.d2i`, other `SharedStash*.d2i` | Offline shared stash |
 
-Left alone on purpose: `.bak` files, editor leftovers, anything inside `.d2r-sync-backups`, and unrelated files such as notes. Symlinks are refused so a save name cannot point at a file outside the folder.
+Left alone on purpose: `.keyo` and `.ctlo` (online keymap and controller files), any other file belonging to an online character, character names checked in Settings or listed in `exclude_characters`, `.bak` files, editor leftovers, anything inside `.d2r-sync-backups`, and unrelated files such as notes. Symlinks are refused so a save name cannot point at a file outside the folder. The exclude list is combined from both machines before anything is copied, so a name excluded on only one side is not pushed across and is not deleted on the other.
 
 ## How a file is chosen
 
@@ -99,11 +99,11 @@ What the three screens do:
 
 - **Sync** lists each character and the shared stash, with class, level, and the last-modified time on this machine and on the peer. The status badges are Send, Receive, Conflict, and Up to date. **Sync now** connects and syncs. **Dry run** shows what would happen. If D2R is running and blocking is on, the list still loads but the sync button stays disabled.
 - **Result** shows the last run. A conflict card explains which copy becomes the live character and which copy is archived. The table lists every other file, the action, and the backup folder.
-- **Settings** sets the save folder, host or connect mode, automatic or manual peer discovery, the peer IP and port, the shared secret, how many days of backups to keep, and whether to block while `D2R.exe` is running.
+- **Settings** sets the save folder, host or connect mode, automatic or manual peer discovery, the peer IP and port, the shared secret, how many days of backups to keep, whether to block while `D2R.exe` is running, and which characters to leave out. Online characters are checked and locked. A checked offline character is saved in `exclude_characters` and skipped on both machines.
 
 The window never asks a conflict question on stdin. If the config says `newest`, that policy is used. `keep-both` and `ask` both become keep-both in the window, so the older file is archived and nothing is left for a later prompt. `ask` remains available in the CLI.
 
-In **Connect** mode, **Sync now** discovers the peer (or uses the manual IP) and syncs. In **Host** mode the button is **Start host**: this machine listens, and the other one connects. Network and sync work run off the UI thread. The sync button uses the same peer settings as **Test connection**, including a manual IP that has not been saved yet.
+In **Connect** mode, **Sync now** discovers the peer (or uses the manual IP) and syncs. In **Host** mode the button is **Start host**: this machine listens, and the other one connects. The dashboard shows the peer name and IP while that machine is connected, what is being copied, and then returns to waiting so the next sync can start without pressing Start host again. A finished sync opens **Result** (files sent, files received, conflicts, and the backup folder) and the dashboard footer keeps the last sync time and peer. The file list refreshes afterward. A dashboard refresh from the other machine connects only briefly and does not count as a sync. Network and sync work run off the UI thread. The sync button uses the same peer settings as **Test connection**, including a manual IP that has not been saved yet.
 
 A preview while the game is open is read-only, so the dashboard can show the table with the button disabled. An actual sync still refuses.
 
@@ -292,13 +292,14 @@ A dry run connects and prints the plan. It does not write saves or sync state.
   "listen_host": "0.0.0.0",
   "name": null,
   "role": "client",
-  "peer_mode": "auto"
+  "peer_mode": "auto",
+  "exclude_characters": []
 }
 ```
 
 `null` or `""` for `save_path`, `peer`, and `name` means "detect automatically". `name` defaults to the hostname and is shown to the other machine. `peer` may be `192.168.1.20` or `192.168.1.20:41943`.
 
-`role` is `client` or `host`, and `peer_mode` is `auto` or `manual`. The window reads and writes both. The CLI ignores them and still uses `serve` versus `sync`, and `--peer` versus discovery. Older config files without these fields load as client and auto.
+`role` is `client` or `host`, and `peer_mode` is `auto` or `manual`. The window reads and writes both. The CLI ignores them and still uses `serve` versus `sync`, and `--peer` versus discovery. Older config files without these fields load as client and auto. `exclude_characters` is a list of character names the window checkbox list writes. The CLI honors it too. Online characters are skipped even when the list is empty.
 
 `D2R_SYNC_CONFIG_DIR` overrides the directory that holds `config.json` and `state.json`. If you pass `--config /path/to/config.json`, state is stored beside that file instead.
 
