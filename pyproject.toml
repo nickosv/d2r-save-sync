@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "d2r-save-sync"
+version = "0.1.0"
+description = "Sync Diablo II: Resurrected offline saves between a Windows PC and a Steam Deck over the LAN"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = []
+
+[project.scripts]
+d2rsync = "d2rsync.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["d2rsync*"]
