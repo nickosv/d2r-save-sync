@@ -51,10 +51,10 @@ class WindowSmokeTests(unittest.TestCase):
         self.app.processEvents()
 
         self.assertFalse(window.sync_btn.isEnabled())
-        self.assertIn("Synkroniser nu", window.sync_btn.text())
+        self.assertIn("Sync now", window.sync_btn.text())
         self.assertTrue(window.warn.isVisible())
         self.assertIn("D2R.exe", window.warn_text.text())
-        self.assertIn("Steam Deck fundet", window.dash_pill_text.text())
+        self.assertIn("Steam Deck found", window.dash_pill_text.text())
         self.assertTrue(window.dry.isChecked())
         self.assertEqual(window.size().width(), 1280)
         self.assertEqual(window.size().height(), 800)
@@ -67,10 +67,10 @@ class WindowSmokeTests(unittest.TestCase):
         self.app.processEvents()
         texts = " ".join(label.text() for label in window.findChildren(QLabel))
         self.assertIn("DemoNekro", texts)
-        self.assertIn("Niveau 62", texts)
-        self.assertIn("behold begge", texts)
+        self.assertIn("Level 62", texts)
+        self.assertIn("keep both", texts)
         self.assertIn("EksempelHelt.d2s", texts)
-        self.assertIn("3 filer synkroniseret", window.result_pill_text.text())
+        self.assertIn("3 files synced", window.result_pill_text.text())
         window.grab().save(str(shots / "screen2.png"))
 
         window.show_settings_draft(
@@ -88,12 +88,12 @@ class WindowSmokeTests(unittest.TestCase):
         )
         self.app.processEvents()
         self.assertEqual(window.path_edit.text(), r"C:\Users\Spiller\Saved Games\Diablo II Resurrected")
-        self.assertIn("AUTOMATISK", window.path_label.text())
+        self.assertIn("DETECTED", window.path_label.text())
         self.assertEqual(window.role.current(), "host")
         self.assertEqual(window.host_edit.text(), "192.168.1.42")
         self.assertEqual(window.port.value(), 47821)
         self.assertEqual(window.secret.echoMode().name, "Password")
-        self.assertEqual(window.retention_label.text(), "30 dage")
+        self.assertEqual(window.retention_label.text(), "30 days")
         self.assertTrue(window.block.isChecked())
         window.grab().save(str(shots / "screen3.png"))
 
@@ -150,6 +150,44 @@ class WindowSmokeTests(unittest.TestCase):
         window._cancel_settings()
         self.assertEqual(window.role.current(), "host")
         self.assertEqual(window.stack.currentIndex(), 0)
+        window.close()
+
+    def test_sync_uses_the_same_manual_peer_as_the_connection_test(self):
+        from d2rsync.ui.window import MainWindow
+
+        directory = Path(tempfile.mkdtemp())
+        window = MainWindow(autostart=False, config_file=directory / "config.json")
+        window.role.set_current("client")
+        window.peer_mode.set_current("manual")
+        window.host_edit.setText("192.168.178.69")
+        window.port.setValue(41943)
+        window.secret.setText("shared-secret")
+        snap = window._snapshot_for_action()
+        self.assertEqual(snap.peer_mode, "manual")
+        self.assertEqual(snap.peer, "192.168.178.69")
+        self.assertEqual(snap.port, 41943)
+        self.assertEqual(window.cfg.peer_mode, "auto")
+        self.assertIsNone(window.cfg.peer)
+        window.close()
+
+    def test_dashboard_pill_reports_a_connection_error(self):
+        from d2rsync.ui.window import MainWindow
+
+        directory = Path(tempfile.mkdtemp())
+        window = MainWindow(autostart=False, config_file=directory / "config.json")
+        window.cfg.role = "client"
+        window.connected = False
+        window.searching = False
+        window._note_sticky = False
+        window._note = "Could not connect. Check the IP, port, and that the host is running."
+        window._render_dashboard_from_state()
+        self.assertEqual(
+            window.dash_pill_text.text(),
+            "Could not connect. Check the IP, port, and that the host is running.",
+        )
+        window._note = "No single peer answered. Start the other machine, or set an IP in Settings."
+        window._render_dashboard_from_state()
+        self.assertEqual(window.dash_pill_text.text(), "No peer found")
         window.close()
 
 

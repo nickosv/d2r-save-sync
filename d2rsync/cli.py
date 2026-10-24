@@ -19,9 +19,9 @@ from d2rsync.config import (
     state_path,
 )
 from d2rsync.discover import discover, safe_service_name
-from d2rsync.errors import D2RSyncError, GameRunningError, SavePathError
+from d2rsync.errors import D2RSyncError, GameRunningError
 from d2rsync.model import Decision
-from d2rsync.paths import choose_save_folder, detect_save_folders
+from d2rsync.paths import configured_save_folder
 from d2rsync.server import Server
 from d2rsync.state import load_state
 from d2rsync.store import DirectorySave
@@ -355,19 +355,7 @@ def _state_file(args) -> Path:
 
 
 def _save_choice(cfg):
-    try:
-        locations = detect_save_folders()
-    except OSError as exc:
-        raise SavePathError(
-            "could not find a Diablo II Resurrected save folder. "
-            "Set save_path in the config file."
-        ) from exc
-    override = Path(cfg.save_path) if cfg.save_path else None
-    try:
-        chosen = choose_save_folder(locations, override)
-    except FileNotFoundError as exc:
-        raise SavePathError(str(exc)) from exc
-    return chosen, locations
+    return configured_save_folder(cfg.save_path)
 
 
 def _note_alternates(log: Log, chosen: Path, locations, pinned: bool) -> None:

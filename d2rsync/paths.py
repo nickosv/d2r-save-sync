@@ -8,6 +8,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from d2rsync.errors import SavePathError
 from d2rsync.names import is_syncable_name
 
 # Steam release of Diablo II: Resurrected. Battle.net-via-Proton uses a
@@ -84,6 +85,27 @@ def detect_save_folders(
         if current is None or location.rank() > current.rank():
             unique[key] = location
     return sorted(unique.values(), key=lambda item: item.rank(), reverse=True)
+
+
+def configured_save_folder(save_path: str | None) -> tuple[Path, list[SaveLocation]]:
+    """Use a configured folder as-is. Scan only when no folder is configured.
+
+    A pinned path must not walk SD-card or Proton libraries. Those walks
+    raise PermissionError on directories the Deck user cannot read, and
+    that used to surface even after the player had chosen a folder.
+    """
+    try:
+        if save_path:
+            return choose_save_folder([], Path(save_path)), []
+        locations = detect_save_folders()
+        return choose_save_folder(locations, None), locations
+    except FileNotFoundError as exc:
+        raise SavePathError(str(exc)) from exc
+    except OSError as exc:
+        raise SavePathError(
+            "could not find a Diablo II Resurrected save folder. "
+            "Set save_path in the config file."
+        ) from exc
 
 
 def choose_save_folder(locations: list[SaveLocation], override: Path | None = None) -> Path:

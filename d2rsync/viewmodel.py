@@ -1,4 +1,4 @@
-"""Pure view-model for the Danish desktop window.
+"""Pure view-model for the desktop window.
 
 No Qt imports. The window renders these values and nothing else decides
 what a row means.
@@ -16,19 +16,21 @@ from d2rsync.errors import ConfigError
 from d2rsync.model import Decision, Entry, Outcome, Resolved
 from d2rsync.plan import MTIME_TIE_SECONDS, preferred_side
 
-_MONTHS = ("jan", "feb", "mar", "apr", "maj", "jun", "jul", "aug", "sep", "okt", "nov", "dec")
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 _SUFFIXES = (".d2s", ".key", ".keyo", ".ctl", ".ctlo", ".map")
 _MA = re.compile(r"^(?P<stem>.+)\.ma\d+$", re.IGNORECASE)
 
-MISSING_SAVE_FOLDER = "Gemmemappen blev ikke fundet. Vælg den under Indstillinger."
+MISSING_SAVE_FOLDER = "Save folder was not found. Choose it in Settings."
+NO_PEER_FOUND = "No peer found"
+DISCOVERY_MISS = "No single peer answered. Start the other machine, or set an IP in Settings."
 
 STATUS_LABELS = {
-    "send": "↑ Sendes",
-    "get": "↓ Hentes",
-    "conflict": "⚔ Konflikt",
-    "ok": "✓ Opdateret",
-    "mixed": "↕ Blandet",
-    "delete": "Slettes",
+    "send": "↑ Send",
+    "get": "↓ Receive",
+    "conflict": "⚔ Conflict",
+    "ok": "✓ Up to date",
+    "mixed": "↕ Mixed",
+    "delete": "Delete",
     "unknown": "–",
 }
 
@@ -115,24 +117,24 @@ class ButtonState:
     text: str
 
 
-def format_da_time(mtime: float | None, now: datetime) -> str:
+def format_when(mtime: float | None, now: datetime) -> str:
     if mtime is None:
         return "—"
     moment = datetime.fromtimestamp(mtime)
     clock = moment.strftime("%H:%M")
     if moment.date() == now.date():
-        return f"i dag {clock}"
+        return f"today {clock}"
     if moment.date() == now.date() - timedelta(days=1):
-        return f"i går {clock}"
-    return f"{moment.day}. {_MONTHS[moment.month - 1]} {clock}"
+        return f"yesterday {clock}"
+    return f"{moment.day} {_MONTHS[moment.month - 1]} {clock}"
 
 
 def format_footer(synced_at: float | None, now: datetime) -> str:
     if synced_at is None:
-        when = "aldrig"
+        when = "never"
     else:
-        when = format_da_time(synced_at, now)
-    return f"Sidste synk: {when} · Backup før overskrivning: til"
+        when = format_when(synced_at, now)
+    return f"Last sync: {when} · Backup before overwrite: on"
 
 
 def group_key(filename: str) -> tuple[str, str]:
@@ -176,8 +178,8 @@ def build_rows(
                 title=title,
                 subtitle=subtitle,
                 detail=detail,
-                local_time=format_da_time(local_mtime, now),
-                remote_time=format_da_time(remote_mtime, now),
+                local_time=format_when(local_mtime, now),
+                remote_time=format_when(remote_mtime, now),
                 local_newer=local_newer,
                 remote_newer=remote_newer,
                 status=status,
@@ -200,13 +202,13 @@ def sync_button_state(
     hosting: bool,
 ) -> ButtonState:
     if busy:
-        return ButtonState(False, "Arbejder…")
+        return ButtonState(False, "Working…")
     if role == "host":
         if hosting:
-            return ButtonState(False, "Lytter…")
-        return ButtonState(has_save and has_secret, "Start vært")
+            return ButtonState(False, "Listening…")
+        return ButtonState(has_save and has_secret, "Start host")
     enabled = has_save and has_secret and not (game_running and block_game)
-    return ButtonState(enabled, "Synkroniser nu")
+    return ButtonState(enabled, "Sync now")
 
 
 def make_dashboard_view(
@@ -226,6 +228,7 @@ def make_dashboard_view(
     has_save: bool,
     synced_at: float | None,
     now: datetime,
+    status_error: str = "",
 ) -> DashboardView:
     button = sync_button_state(
         role=role,
@@ -237,33 +240,36 @@ def make_dashboard_view(
         hosting=hosting,
     )
     if role == "host" and hosting:
-        pill_text = "Vært aktiv – venter på modpart"
+        pill_text = "Host active – waiting for the other machine"
         pill_kind = "ok"
     elif connected and peer_host:
-        pill_text = f"{peer_name} fundet – {peer_host}"
+        pill_text = f"{peer_name} found – {peer_host}"
         pill_kind = "ok"
     elif searching:
-        pill_text = "Leder efter modpart…"
+        pill_text = "Looking for the other machine…"
         pill_kind = "wait"
+    elif status_error and status_error not in (NO_PEER_FOUND, DISCOVERY_MISS):
+        pill_text = status_error
+        pill_kind = "bad"
     elif role == "host":
-        pill_text = "Vært er ikke startet"
+        pill_text = "Host is not started"
         pill_kind = "wait"
     else:
-        pill_text = "Ingen modpart fundet"
+        pill_text = NO_PEER_FOUND
         pill_kind = "bad"
     warning = None
     if game_running:
         warning = (
-            "Diablo II: Resurrected kører (D2R.exe). Luk spillet før synkronisering "
-            "– ellers kan gemte filer blive overskrevet."
+            "Diablo II: Resurrected is running (D2R.exe). Quit the game before syncing, "
+            "or saved files can be overwritten."
         )
     elif peer_game_running:
         warning = (
-            "Diablo II: Resurrected kører på den anden enhed. Luk spillet dér før synkronisering."
+            "Diablo II: Resurrected is running on the other machine. Quit the game there before syncing."
         )
-    header = peer_name if peer_name else "Modpart"
+    header = peer_name if peer_name else "Peer"
     if has_save or searching:
-        empty_text = "Ingen karakterer i gemmemappen endnu."
+        empty_text = "No characters in the save folder yet."
     else:
         empty_text = MISSING_SAVE_FOLDER
     return DashboardView(
@@ -332,17 +338,19 @@ def build_result_view(
     ]
     conflict_count = len({group_key(item.rel)[0] for item in outcomes if item.conflict and item.op != "skipped"})
     if dry_run:
-        title = "Prøvekørsel"
-        pill = f"{len(changed)} filer ville synkroniseres"
+        title = "Dry run"
+        pill = _count_label(len(changed), "file would sync", "files would sync")
     else:
-        title = "Synkronisering fuldført"
-        pill = f"{len(changed)} filer synkroniseret"
+        title = "Sync finished"
+        pill = _count_label(len(changed), "file synced", "files synced")
     if conflict_count:
-        word = "konflikt" if conflict_count == 1 else "konflikter"
-        done = "ville løses" if dry_run else "løst" if conflict_count == 1 else "løst"
-        pill = f"{pill} · {conflict_count} {word} {done}"
+        if dry_run:
+            word = "conflict would be resolved" if conflict_count == 1 else "conflicts would be resolved"
+        else:
+            word = "conflict resolved" if conflict_count == 1 else "conflicts resolved"
+        pill = f"{pill} · {conflict_count} {word}"
     if any(item.op == "error" for item in outcomes):
-        title = "Synkronisering stoppet"
+        title = "Sync stopped"
     archive_dir = ""
     for item in outcomes:
         if item.archive_path:
@@ -421,22 +429,22 @@ def conflict_character_d2s(decisions: list[Decision], filenames: list[str]) -> l
     return found
 
 
-def danish_error(exc: BaseException) -> str:
+def user_error(exc: BaseException) -> str:
+    if isinstance(exc, ConfigError):
+        return str(exc)
     name = type(exc).__name__
     text = str(exc)
     lowered = text.lower()
-    if name == "GameRunningError" or "appears to be running" in lowered or "kører" in lowered:
-        return (
-            "Diablo II: Resurrected kører. Luk spillet på begge enheder før synkronisering."
-        )
-    if name == "AuthError" or "secret" in lowered or "hemmelighed" in lowered:
-        return "Den delte hemmelighed blev afvist. Tjek at begge enheder bruger den samme."
+    if name == "GameRunningError" or "appears to be running" in lowered:
+        return "Diablo II: Resurrected is running. Quit the game on both machines before syncing."
+    if name == "AuthError" or "secret" in lowered:
+        return "The shared secret was rejected. Check that both machines use the same one."
     if "no peer address" in lowered:
-        return "Ingen modpart er angivet. Skriv IP-adressen under Indstillinger, eller vælg Find automatisk."
+        return "No peer address is set. Enter the IP in Settings, or choose Find automatically."
     if "no peer answered" in lowered or "more than one peer" in lowered:
-        return "Ingen entydig modpart svarede. Start den anden enhed, eller angiv IP under Indstillinger."
+        return DISCOVERY_MISS
     if "could not connect" in lowered or "connection" in lowered:
-        return "Kunne ikke forbinde. Tjek IP, port og at værten kører."
+        return "Could not connect. Check the IP, port, and that the host is running."
     if name == "SavePathError" or (
         "save" in lowered and ("not find" in lowered or "does not exist" in lowered or "could not find" in lowered)
     ):
@@ -514,12 +522,12 @@ def _labels(group_id: str, kind: str, names: list[str], info: CharacterInfo | No
     if kind == "stash":
         filename = names[0]
         low = filename.lower()
-        title = "Fælles stash (hardcore)" if "hard" in low else "Fælles stash"
-        return title, "Delt kiste", filename
+        title = "Shared stash (hardcore)" if "hard" in low else "Shared stash"
+        return title, "Shared stash", filename
     title = info.name if info and info.name else group_id
     if info:
         return title, f"{info.class_name} · {info.level}", ""
-    return title, "Karakter", ""
+    return title, "Character", ""
 
 
 def _featured_conflict(decisions: list[Decision]) -> Decision | None:
@@ -565,7 +573,7 @@ def _conflict_card(
     )
     hint_files = _extension_hint(display, names)
     local_card = _side_card(
-        "Denne PC",
+        "This PC",
         local_info,
         local_entry.mtime if local_entry else None,
         now,
@@ -574,7 +582,7 @@ def _conflict_card(
         archive_hint=archive_hint,
     )
     remote_card = _side_card(
-        peer_name or "Modpart",
+        peer_name or "Peer",
         remote_info,
         remote_entry.mtime if remote_entry else None,
         now,
@@ -584,28 +592,28 @@ def _conflict_card(
     )
     winner, loser = (local_card, remote_card) if local_wins else (remote_card, local_card)
     if conflict_policy == "newest":
-        policy = "Politik: nyeste – den nyeste kopi erstatter den ældre. Den overskrevne fil ligger i backup."
+        policy = "Policy: newest – the newest copy replaces the older one. The overwritten file is kept in the backup."
     else:
         policy = (
-            "Politik: behold begge – den nyeste bliver den aktive karakter, "
-            "den ældre gemmes i arkivet så intet går tabt."
+            "Policy: keep both – the newest becomes the active character, "
+            "and the older one is archived so nothing is lost."
         )
-    reason = "ændret på begge enheder siden sidste synk"
+    reason = "changed on both machines since the last sync"
     if featured.reason_code == "conflict_untracked":
-        reason = "begge enheder har filen, og der er ikke synkroniseret før"
+        reason = "both machines have the file, and they have never synced"
     elif featured.reason_code == "conflict_delete":
-        reason = "slettet på den ene enhed og ændret på den anden"
+        reason = "deleted on one machine and changed on the other"
     return ConflictView(display, class_name, reason, winner, loser, policy)
 
 
 def _side_card(heading, info, mtime, now, files_hint, *, newest: bool, archive_hint: str) -> SideCard:
-    level = f"Niveau {info.level}" if info else "Niveau ukendt"
-    when = format_da_time(mtime, now)
-    line = f"{level} · ændret {when}" if mtime is not None else level
+    level = f"Level {info.level}" if info else "Level unknown"
+    when = format_when(mtime, now)
+    line = f"{level} · changed {when}" if mtime is not None else level
     if newest:
-        return SideCard("★ NYESTE – bliver aktiv", "newest", heading, line, files_hint)
-    hint = archive_hint or "Gemmes i .d2r-sync-backups/conflicts/"
-    return SideCard("📦 ÆLDRE – arkiveres", "older", heading, line, hint)
+        return SideCard("★ NEWEST – becomes active", "newest", heading, line, files_hint)
+    hint = archive_hint or "Saved in .d2r-sync-backups/conflicts/"
+    return SideCard("📦 OLDER – archived", "older", heading, line, hint)
 
 
 def _d2s_name(names: list[str]) -> str | None:
@@ -637,28 +645,28 @@ def _extension_hint(display: str, names: list[str]) -> str:
 
 
 def _past_action(outcome: Outcome, peer_name: str, dry_run: bool) -> tuple[str, str]:
-    peer = peer_name or "modpart"
+    peer = peer_name or "peer"
     if outcome.op == "push":
-        verb = "Sendes til" if dry_run else "Sendt til"
+        verb = "Will send to" if dry_run else "Sent to"
         return "send", f"↑ {verb} {peer}"
     if outcome.op == "pull":
-        verb = "Hentes fra" if dry_run else "Hentet fra"
+        verb = "Will receive from" if dry_run else "Received from"
         return "get", f"↓ {verb} {peer}"
     if outcome.op == "delete_local":
-        verb = "Slettes her" if dry_run else "Slettet her"
+        verb = "Will delete here" if dry_run else "Deleted here"
         return "delete", verb
     if outcome.op == "delete_remote":
-        verb = f"Slettes på {peer}" if dry_run else f"Slettet på {peer}"
+        verb = f"Will delete on {peer}" if dry_run else f"Deleted on {peer}"
         return "delete", verb
     if outcome.op in ("skip", "unresolved"):
-        return "conflict", "Sprunget over"
+        return "conflict", "Skipped"
     return "ok", outcome.op
 
 
 def _backup_label(outcome: Outcome, dry_run: bool) -> str:
     path = outcome.backup_path or outcome.archive_path
     if not path:
-        return "(ingen endnu)" if dry_run else "—"
+        return "(none yet)" if dry_run else "—"
     folder = path.rsplit("/", 1)[0]
     return folder + "/"
 
@@ -666,9 +674,11 @@ def _backup_label(outcome: Outcome, dry_run: bool) -> str:
 def _archive_hint(outcomes: list[Outcome], names: set[str], dry_run: bool) -> str:
     for item in outcomes:
         if item.rel in names and item.archive_path:
-            return "Gemmes som " + item.archive_path
+            return "Saved as " + item.archive_path
         if item.rel in names and item.backup_path:
-            return "Gemmes i " + item.backup_path.rsplit("/", 1)[0] + "/"
-    if dry_run:
-        return "Gemmes i .d2r-sync-backups/conflicts/"
-    return "Gemmes i .d2r-sync-backups/conflicts/"
+            return "Saved in " + item.backup_path.rsplit("/", 1)[0] + "/"
+    return "Saved in .d2r-sync-backups/conflicts/"
+
+
+def _count_label(count: int, one: str, many: str) -> str:
+    return f"{count} {one if count == 1 else many}"

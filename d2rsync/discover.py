@@ -15,7 +15,9 @@ import subprocess
 import threading
 from dataclasses import dataclass
 
+from d2rsync.config import parse_peer
 from d2rsync.errors import D2RSyncError
+from d2rsync.game import no_console_kwargs
 
 MAGIC = "D2RSYNC1"
 _NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,40}$")
@@ -151,6 +153,7 @@ class DiscoveryServer:
                 ],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                **no_console_kwargs(),
             )
         except OSError:
             self._avahi = None
@@ -215,6 +218,27 @@ def discover(
     for peer in avahi_peers:
         peers.setdefault((peer.host, peer.port), peer)
     return sorted(peers.values(), key=lambda item: (item.name, item.host, item.port))
+
+
+def locate_peer(peer_mode: str, peer: str | None, port: int, discover_port: int) -> tuple[str, int]:
+    """Resolve the machine to sync with.
+
+    Manual mode uses the configured address and does not broadcast. Auto
+    mode asks the LAN and refuses an ambiguous answer.
+    """
+    if peer_mode == "manual":
+        if not peer:
+            raise D2RSyncError("no peer address configured")
+        return parse_peer(peer, port)
+    found = discover(discover_port, timeout=2.5)
+    if not found:
+        raise D2RSyncError(
+            "no peer answered LAN discovery. Start the other machine, or set a manual IP."
+        )
+    if len(found) > 1:
+        listed = ", ".join(item.label() for item in found)
+        raise D2RSyncError(f"more than one peer answered ({listed}). Set a manual IP.")
+    return found[0].host, found[0].port
 
 
 def probe(host: str, discover_port: int, *, timeout: float = 1.0, nonce: str | None = None) -> Peer | None:
@@ -283,6 +307,7 @@ def browse_avahi(*, timeout: float = 1.0) -> list[Peer]:
             capture_output=True,
             text=True,
             timeout=timeout,
+            **no_console_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return []

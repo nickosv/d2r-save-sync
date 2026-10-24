@@ -1,4 +1,4 @@
-"""Danish desktop window. Network and disk scans stay off the UI thread."""
+"""Desktop window. Network and disk scans stay off the UI thread."""
 
 from __future__ import annotations
 
@@ -43,15 +43,14 @@ from d2rsync.config import (
     Config,
     ConfigError,
     load_config,
-    parse_peer,
     state_path,
     write_config,
 )
 from d2rsync.d2s import read_local_d2s
-from d2rsync.discover import discover, safe_service_name
-from d2rsync.errors import D2RSyncError, SavePathError
+from d2rsync.discover import locate_peer, safe_service_name
+from d2rsync.errors import D2RSyncError
 from d2rsync.game import game_is_running
-from d2rsync.paths import choose_save_folder, detect_save_folders
+from d2rsync.paths import configured_save_folder
 from d2rsync.preview import preview_with_peer
 from d2rsync.server import Server
 from d2rsync.state import load_state
@@ -67,7 +66,7 @@ from d2rsync.viewmodel import (
     apply_draft,
     build_result_view,
     build_rows,
-    danish_error,
+    user_error,
     draft_from_config,
     gui_conflict_policy,
     make_dashboard_view,
@@ -163,7 +162,7 @@ class MainWindow(QMainWindow):
             self.cfg = load_config(self._config_file)
         except ConfigError as exc:
             self.cfg = Config(path=self._config_file)
-            self._note = danish_error(exc)
+            self._note = user_error(exc)
 
         self._build()
         self._fill_settings(draft_from_config(self.cfg))
@@ -213,9 +212,9 @@ class MainWindow(QMainWindow):
         logo.setFixedSize(60, 60)
         logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(logo, 0, Qt.AlignmentFlag.AlignHCenter)
-        self.nav_sync = NavButton("⟳", "Synk")
-        self.nav_result = NavButton("⚔", "Resultat")
-        self.nav_settings = NavButton("⚙", "Indstil.")
+        self.nav_sync = NavButton("⟳", "Sync")
+        self.nav_result = NavButton("⚔", "Result")
+        self.nav_settings = NavButton("⚙", "Settings")
         self.nav_group = QButtonGroup(self)
         self.nav_group.setExclusive(True)
         for index, button in enumerate((self.nav_sync, self.nav_result, self.nav_settings)):
@@ -265,15 +264,15 @@ class MainWindow(QMainWindow):
         panel_layout.addWidget(self.table_scroll)
         layout.addWidget(panel, 1)
 
-        self.sync_btn = self._push("⟳  Synkroniser nu", "primary")
+        self.sync_btn = self._push("⟳  Sync now", "primary")
         self.sync_btn.setMinimumWidth(280)
         self.sync_btn.clicked.connect(self._primary_action)
         self.dry = Switch(False)
-        self.dry_wrap = self._toggle_block(self.dry, "Prøvekørsel", "Vis kun hvad der ville ske")
-        self.footer = QLabel("Sidste synk: aldrig · Backup før overskrivning: til")
+        self.dry_wrap = self._toggle_block(self.dry, "Dry run", "Show what would happen")
+        self.footer = QLabel("Last sync: never · Backup before overwrite: on")
         self.footer.setProperty("role", "hint")
         self.footer.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        pad = QLabel("Ⓐ Vælg    Ⓨ Synkroniser    Ⓑ Tilbage")
+        pad = QLabel("Ⓐ Select    Ⓨ Sync    Ⓑ Back")
         pad.setObjectName("pad")
         pad.setAlignment(Qt.AlignmentFlag.AlignRight)
         side = QVBoxLayout()
@@ -294,7 +293,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(14)
-        self.result_title = self._title("Synkronisering fuldført")
+        self.result_title = self._title("Sync finished")
         self.result_pill, self.result_pill_text, self.result_dot = self._pill()
         layout.addLayout(self._top(self.result_title, self.result_pill))
 
@@ -321,18 +320,18 @@ class MainWindow(QMainWindow):
         self.file_scroll.setMinimumHeight(160)
         file_layout.addWidget(self.file_scroll)
         inner_layout.addWidget(file_panel)
-        self.result_empty = QLabel("Ingen synkronisering endnu.")
+        self.result_empty = QLabel("No sync yet.")
         self.result_empty.setProperty("role", "hint")
         inner_layout.addWidget(self.result_empty)
         inner_layout.addStretch(1)
         scroll.setWidget(inner)
         layout.addWidget(scroll, 1)
 
-        self.done_btn = self._push("✓  Færdig", "primary")
+        self.done_btn = self._push("✓  Done", "primary")
         self.done_btn.clicked.connect(self._done)
-        self.archive_btn = self._push("📁  Åbn arkiv", "secondary")
+        self.archive_btn = self._push("📁  Open archive", "secondary")
         self.archive_btn.clicked.connect(self._open_archive)
-        self.log_btn = self._push("Vis log", "secondary")
+        self.log_btn = self._push("Show log", "secondary")
         self.log_btn.clicked.connect(self._show_log)
         bottom = QHBoxLayout()
         bottom.setSpacing(14)
@@ -348,7 +347,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
-        layout.addWidget(self._title("Indstillinger"))
+        layout.addWidget(self._title("Settings"))
 
         scroll = self._scroll()
         form = QWidget()
@@ -358,7 +357,7 @@ class MainWindow(QMainWindow):
         form_layout.setContentsMargins(0, 0, 8, 0)
         form_layout.setSpacing(16)
 
-        self.path_label = self._field_label("GEMMEMAPPE (FUNDET AUTOMATISK)")
+        self.path_label = self._field_label("SAVE FOLDER (DETECTED)")
         path_block, path_layout = self._block()
         path_layout.addWidget(self.path_label)
         path_frame = QFrame()
@@ -369,9 +368,9 @@ class MainWindow(QMainWindow):
         path_row.setSpacing(8)
         self.path_edit = QLineEdit()
         self.path_edit.setReadOnly(True)
-        change = self._push("Skift…", "mini")
+        change = self._push("Change…", "mini")
         change.clicked.connect(self._choose_folder)
-        auto = self._push("Find selv", "mini")
+        auto = self._push("Detect", "mini")
         auto.clicked.connect(self._clear_folder_override)
         path_row.addWidget(self.path_edit, 1)
         path_row.addWidget(change)
@@ -380,24 +379,24 @@ class MainWindow(QMainWindow):
         form_layout.addWidget(path_block)
 
         role_block, role_layout = self._block()
-        role_layout.addWidget(self._field_label("TILSTAND"))
-        self.role = Segment([("host", "Vær vært"), ("client", "Forbind")], "client")
+        role_layout.addWidget(self._field_label("MODE"))
+        self.role = Segment([("host", "Host"), ("client", "Connect")], "client")
         self.role.changed.connect(lambda _key: self._update_setting_hints())
-        self.role_hint = self._hint("Denne enhed forbinder og synkroniserer")
+        self.role_hint = self._hint("This machine connects and syncs")
         role_layout.addWidget(self.role)
         role_layout.addWidget(self.role_hint)
 
         mode_block, mode_layout = self._block()
-        mode_layout.addWidget(self._field_label("MODPART"))
-        self.peer_mode = Segment([("auto", "Find automatisk"), ("manual", "Manuel IP")], "auto")
+        mode_layout.addWidget(self._field_label("PEER"))
+        self.peer_mode = Segment([("auto", "Find automatically"), ("manual", "Manual IP")], "auto")
         self.peer_mode.changed.connect(lambda _key: self._update_setting_hints())
-        self.mode_hint = self._hint("UDP-broadcast på hjemmenetværket")
+        self.mode_hint = self._hint("UDP broadcast on the home LAN")
         mode_layout.addWidget(self.peer_mode)
         mode_layout.addWidget(self.mode_hint)
         form_layout.addLayout(self._pair(role_block, mode_block))
 
         ip_block, ip_layout = self._block()
-        self.ip_label = self._field_label("MODPARTENS IP")
+        self.ip_label = self._field_label("PEER IP")
         ip_layout.addWidget(self.ip_label)
         ip_frame = QFrame()
         ip_frame.setObjectName("field")
@@ -419,7 +418,7 @@ class MainWindow(QMainWindow):
         ip_layout.addWidget(ip_frame)
 
         secret_block, secret_layout = self._block()
-        secret_layout.addWidget(self._field_label("DELT HEMMELIGHED"))
+        secret_layout.addWidget(self._field_label("SHARED SECRET"))
         secret_frame = QFrame()
         secret_frame.setObjectName("field")
         secret_frame.setMinimumHeight(56)
@@ -428,24 +427,24 @@ class MainWindow(QMainWindow):
         secret_row.setSpacing(8)
         self.secret = QLineEdit()
         self.secret.setEchoMode(QLineEdit.EchoMode.Password)
-        self.secret.setPlaceholderText("mindst 8 tegn")
+        self.secret.setPlaceholderText("at least 8 characters")
         self.secret.textChanged.connect(lambda _text: self._update_fingerprint())
         self.eye = self._push("👁", "mini")
         self.eye.setFixedWidth(48)
         self.eye.clicked.connect(self._toggle_secret)
-        new_secret = self._push("Ny", "mini")
+        new_secret = self._push("New", "mini")
         new_secret.setFixedWidth(56)
         new_secret.clicked.connect(self._generate_secret)
         secret_row.addWidget(self.secret, 1)
         secret_row.addWidget(self.eye)
         secret_row.addWidget(new_secret)
-        self.fingerprint = self._hint("Mindst 8 tegn. Den skal være ens på begge enheder.")
+        self.fingerprint = self._hint("At least 8 characters. It must be the same on both machines.")
         secret_layout.addWidget(secret_frame)
         secret_layout.addWidget(self.fingerprint)
         form_layout.addLayout(self._pair(ip_block, secret_block))
 
         keep_block, keep_layout = self._block()
-        keep_layout.addWidget(self._field_label("BEHOLD BACKUPS"))
+        keep_layout.addWidget(self._field_label("KEEP BACKUPS"))
         keep_frame = QFrame()
         keep_frame.setObjectName("field")
         keep_frame.setMinimumHeight(56)
@@ -457,7 +456,7 @@ class MainWindow(QMainWindow):
         plus.setFixedWidth(56)
         minus.clicked.connect(lambda: self._step_retention(-1))
         plus.clicked.connect(lambda: self._step_retention(1))
-        self.retention_label = QLabel("30 dage")
+        self.retention_label = QLabel("30 days")
         self.retention_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.retention_label.setStyleSheet("font-size: 20px; color: #f3e6c8; background: transparent;")
         keep_row.addWidget(minus)
@@ -470,9 +469,9 @@ class MainWindow(QMainWindow):
         action_row = QHBoxLayout(action_block)
         action_row.setContentsMargins(0, 22, 0, 0)
         action_row.setSpacing(14)
-        open_backup = self._push("📁  Åbn backupmappe", "secondary")
+        open_backup = self._push("📁  Open backup folder", "secondary")
         open_backup.clicked.connect(self._open_backup_root)
-        test = self._push("Test forbindelse", "secondary")
+        test = self._push("Test connection", "secondary")
         test.clicked.connect(self._test_connection)
         action_row.addWidget(open_backup, 1)
         action_row.addWidget(test, 1)
@@ -483,7 +482,7 @@ class MainWindow(QMainWindow):
         block_layout = QHBoxLayout(block_row)
         block_layout.setContentsMargins(0, 0, 0, 0)
         block_layout.setSpacing(12)
-        block_label = QLabel("Bloker synk mens D2R.exe kører")
+        block_label = QLabel("Block sync while D2R.exe is running")
         block_label.setStyleSheet("font-size: 18px; color: #e8dcc4; background: transparent;")
         block_layout.addWidget(self.block)
         block_layout.addWidget(block_label)
@@ -497,9 +496,9 @@ class MainWindow(QMainWindow):
         self.settings_status.setObjectName("statusLine")
         self.settings_status.setWordWrap(True)
         layout.addWidget(self.settings_status)
-        save = self._push("💾  Gem", "primary")
+        save = self._push("💾  Save", "primary")
         save.clicked.connect(self._save_settings)
-        cancel = self._push("Annuller", "secondary")
+        cancel = self._push("Cancel", "secondary")
         cancel.clicked.connect(self._cancel_settings)
         bottom = QHBoxLayout()
         bottom.setSpacing(14)
@@ -632,7 +631,7 @@ class MainWindow(QMainWindow):
         if self.cfg.role == "client":
             self.searching = True
             self._render_dashboard_from_state()
-        snap = self._snapshot()
+        snap = self._snapshot_for_action()
         self._start_worker(lambda: _job_refresh(snap), self._on_refresh, self._on_refresh_fail)
 
     def _on_refresh(self, payload: dict) -> None:
@@ -662,7 +661,7 @@ class MainWindow(QMainWindow):
             self.peer_host = ""
         error = payload.get("error") or ""
         if self.game_running is None and not error:
-            error = "Kunne ikke afgøre, om spillet kører. Synkronisering fortsætter."
+            error = "Could not tell whether the game is running. Sync will continue."
         if error:
             self._note = error
             self._note_sticky = False
@@ -679,7 +678,7 @@ class MainWindow(QMainWindow):
 
     def _on_refresh_fail(self, exc: BaseException) -> None:
         self.searching = False
-        self._note = danish_error(exc)
+        self._note = user_error(exc)
         self._note_sticky = False
         self._render_dashboard_from_state()
 
@@ -711,6 +710,7 @@ class MainWindow(QMainWindow):
             has_save=self.save_folder is not None,
             synced_at=self.synced_at,
             now=datetime.now(),
+            status_error="" if self._note_sticky else self._note,
         )
         self._render_dashboard(view)
         self.dash_note.setText(self._note)
@@ -724,7 +724,7 @@ class MainWindow(QMainWindow):
             self.warn.show()
         else:
             self.warn.hide()
-        headers = ["KARAKTER", "KLASSE / NIVEAU", "DENNE PC", view.peer_header.upper(), "STATUS"]
+        headers = ["CHARACTER", "CLASS / LEVEL", "THIS PC", view.peer_header.upper(), "STATUS"]
         records = []
         for row in view.rows:
             records.append(
@@ -768,10 +768,10 @@ class MainWindow(QMainWindow):
             )
         _fill_table(
             self.file_scroll,
-            ["FIL", "HANDLING", "BACKUP"],
+            ["FILE", "ACTION", "BACKUP"],
             records,
             [4, 4, 3],
-            "Ingen filer blev ændret.",
+            "No files were changed.",
         )
         self.result_empty.setVisible(not view.files and view.conflict is None)
 
@@ -785,7 +785,7 @@ class MainWindow(QMainWindow):
         reason = html.escape(conflict.reason)
         klass_bit = f"({klass}) " if klass else ""
         title.setText(
-            f"⚔ Konflikt: <span style='color:#f3e6c8; font-weight:700'>{name}</span> "
+            f"⚔ Conflict: <span style='color:#f3e6c8; font-weight:700'>{name}</span> "
             f"<span style='color:#8a7a62'>{klass_bit}– {reason}</span>"
         )
         self.conflict_layout.addWidget(title)
@@ -812,7 +812,7 @@ class MainWindow(QMainWindow):
         self._start_sync()
 
     def _start_sync(self) -> None:
-        snap = self._snapshot()
+        snap = self._snapshot_for_action()
         self.busy = True
         self._note_sticky = False
         self._render_dashboard_from_state()
@@ -831,7 +831,7 @@ class MainWindow(QMainWindow):
     def _on_sync_fail(self, exc: BaseException) -> None:
         self.busy = False
         self.searching = False
-        text = danish_error(exc)
+        text = user_error(exc)
         self._note = text
         self._note_sticky = False
         self._append_log(text)
@@ -841,9 +841,9 @@ class MainWindow(QMainWindow):
     def _start_host(self) -> None:
         if self.hosting or (self._server_thread is not None and self._server_thread.is_alive()):
             return
-        snap = self._snapshot()
+        snap = self._snapshot_for_action()
         if not snap.secret:
-            self._error_dialog("Angiv en delt hemmelighed under Indstillinger.")
+            self._error_dialog("Enter a shared secret in Settings.")
             return
         self._host_stop_requested = False
         self.busy = True
@@ -864,7 +864,7 @@ class MainWindow(QMainWindow):
                 return
             server.serve_forever()
         except Exception as exc:  # noqa: BLE001 — reported on the window
-            self.host_failed.emit(danish_error(exc))
+            self.host_failed.emit(user_error(exc))
         finally:
             self.host_stopped.emit()
 
@@ -914,7 +914,7 @@ class MainWindow(QMainWindow):
         self._render_dashboard_from_state()
 
     def _on_session(self) -> None:
-        self._session_note = "Modparten har synkroniseret."
+        self._session_note = "The other machine has synced."
         self._append_log(self._session_note)
         self.refresh()
 
@@ -928,10 +928,10 @@ class MainWindow(QMainWindow):
             apply_draft(self.cfg, draft)
             write_config(self.cfg, self._config_file)
         except (ConfigError, OSError) as exc:
-            self.settings_status.setText(danish_error(exc))
+            self.settings_status.setText(user_error(exc))
             return
         self._pinned = bool(draft.save_path)
-        self.settings_status.setText("Indstillinger gemt.")
+        self.settings_status.setText("Settings saved.")
         self._stop_host()
         self.busy = False
         self.hosting = False
@@ -980,45 +980,45 @@ class MainWindow(QMainWindow):
         mode = self.peer_mode.current()
         manual = mode == "manual"
         if role == "host":
-            self.role_hint.setText("Vært venter på den anden enhed (serve)")
+            self.role_hint.setText("Host waits for the other machine")
             self.host_edit.setReadOnly(True)
-            self.host_edit.setPlaceholderText("Denne maskine")
+            self.host_edit.setPlaceholderText("This machine")
             self.port.setEnabled(True)
             if manual:
-                self.mode_hint.setText("Porten er lytteporten. Automatisk søgning er slået fra.")
+                self.mode_hint.setText("The port is the listen port. Automatic discovery is off.")
             else:
-                self.mode_hint.setText("Porten er lytteporten. Modparten kan finde denne maskine på netværket.")
+                self.mode_hint.setText("The port is the listen port. The other machine can find this one on the network.")
         else:
-            self.role_hint.setText("Denne enhed forbinder og synkroniserer")
+            self.role_hint.setText("This machine connects and syncs")
             self.host_edit.setReadOnly(not manual)
             self.port.setEnabled(manual)
-            self.host_edit.setPlaceholderText("192.168.1.42" if manual else "Findes automatisk")
+            self.host_edit.setPlaceholderText("192.168.1.42" if manual else "Found automatically")
             if manual:
-                self.mode_hint.setText("Bruger den IP og port du angiver")
+                self.mode_hint.setText("Uses the IP and port you enter")
             else:
-                self.mode_hint.setText("UDP-broadcast på hjemmenetværket")
+                self.mode_hint.setText("UDP broadcast on the home LAN")
         self._update_path_label()
         self._update_fingerprint()
 
     def _update_path_label(self) -> None:
         if self._pinned:
-            self.path_label.setText("GEMMEMAPPE")
+            self.path_label.setText("SAVE FOLDER")
         else:
-            self.path_label.setText("GEMMEMAPPE (FUNDET AUTOMATISK)")
+            self.path_label.setText("SAVE FOLDER (DETECTED)")
 
     def _update_fingerprint(self) -> None:
         secret = self.secret.text().strip()
         if len(secret) < 8:
-            self.fingerprint.setText("Mindst 8 tegn. Den skal være ens på begge enheder.")
+            self.fingerprint.setText("At least 8 characters. It must be the same on both machines.")
             return
         digest = hashlib.sha256(secret.encode("utf-8")).hexdigest()[:8]
         extra = ""
         if os.environ.get("D2R_SYNC_SECRET"):
-            extra = " Miljøvariablen D2R_SYNC_SECRET bruges i stedet, når den er sat."
-        self.fingerprint.setText(f"Fingeraftryk {digest}.{extra}")
+            extra = " The D2R_SYNC_SECRET environment variable is used instead when it is set."
+        self.fingerprint.setText(f"Fingerprint {digest}.{extra}")
 
     def _update_retention(self) -> None:
-        self.retention_label.setText(f"{self._retention} dage")
+        self.retention_label.setText(f"{self._retention} days")
 
     def _step_retention(self, delta: int) -> None:
         self._retention = min(365, max(1, self._retention + delta))
@@ -1038,7 +1038,7 @@ class MainWindow(QMainWindow):
 
     def _choose_folder(self) -> None:
         start = self.path_edit.text().strip() or str(Path.home())
-        chosen = QFileDialog.getExistingDirectory(self, "Vælg gemmemappe", start)
+        chosen = QFileDialog.getExistingDirectory(self, "Choose save folder", start)
         if not chosen:
             return
         self._pinned = True
@@ -1050,51 +1050,63 @@ class MainWindow(QMainWindow):
         self.path_edit.setText(self._detected)
         self._update_path_label()
 
+    def _trial_config(self) -> Config:
+        draft = self._read_draft()
+        trial = copy.copy(self.cfg)
+        apply_draft(trial, draft)
+        return trial
+
+    def _snapshot_for_action(self) -> SimpleNamespace:
+        """Refresh, sync, and host share the settings Test connection uses."""
+        try:
+            trial = self._trial_config()
+        except ConfigError:
+            trial = self.cfg
+        return self._snapshot(trial)
+
     def _test_connection(self) -> None:
         if self._worker is not None and self._worker.isRunning():
-            self.settings_status.setText("Vent et øjeblik…")
+            self.settings_status.setText("One moment…")
             return
         try:
-            draft = self._read_draft()
-            trial = copy.copy(self.cfg)
-            apply_draft(trial, draft)
+            trial = self._trial_config()
         except ConfigError as exc:
-            self.settings_status.setText(danish_error(exc))
+            self.settings_status.setText(user_error(exc))
             return
         if trial.role == "host":
             server = self._server
             if self.hosting and server is not None and server.bound_port:
                 extra = ""
                 if server.bound_port != trial.port:
-                    extra = " Gem og start værten igen, hvis porten skal skiftes."
-                self.settings_status.setText(f"Værten lytter på port {server.bound_port}.{extra}")
+                    extra = " Save and start the host again if the port should change."
+                self.settings_status.setText(f"Host is listening on port {server.bound_port}.{extra}")
             else:
-                self.settings_status.setText("Værten er ikke startet. Gem, gå til Synk, og tryk Start vært.")
+                self.settings_status.setText("Host is not started. Save, go to Sync, and press Start host.")
             return
         snap = self._snapshot(trial)
         if not snap.secret:
-            self.settings_status.setText("Angiv en delt hemmelighed først.")
+            self.settings_status.setText("Enter a shared secret first.")
             return
-        self.settings_status.setText("Tester forbindelsen…")
+        self.settings_status.setText("Testing the connection…")
         self._start_worker(lambda: _job_test(snap), self._on_test, self._on_test_fail)
 
     def _on_test(self, message: str) -> None:
         self.settings_status.setText(message)
 
     def _on_test_fail(self, exc: BaseException) -> None:
-        self.settings_status.setText(danish_error(exc))
+        self.settings_status.setText(user_error(exc))
 
     def _open_backup_root(self) -> None:
         folder = self._current_save_text()
         if folder is None:
-            self.settings_status.setText("Gemmemappen blev ikke fundet. Vælg den først.")
+            self.settings_status.setText("Save folder was not found. Choose it first.")
             return
         self._open_folder(folder / ".d2r-sync-backups")
 
     def _open_archive(self) -> None:
         folder = self.save_folder or self._current_save_text()
         if folder is None:
-            self._error_dialog("Gemmemappen blev ikke fundet.")
+            self._error_dialog("Save folder was not found.")
             return
         target = folder / ".d2r-sync-backups"
         if self._archive_rel:
@@ -1105,11 +1117,11 @@ class MainWindow(QMainWindow):
         try:
             path.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
-            self._error_dialog(danish_error(exc))
+            self._error_dialog(user_error(exc))
             return
         opened = QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
         if not opened:
-            self.settings_status.setText(f"Mappen ligger her: {path}")
+            self.settings_status.setText(f"The folder is here: {path}")
 
     def _current_save_text(self) -> Path | None:
         text = self.path_edit.text().strip()
@@ -1126,9 +1138,9 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(dialog)
         text = QPlainTextEdit()
         text.setReadOnly(True)
-        text.setPlainText("\n".join(self._log_lines) or "Ingen log endnu.")
+        text.setPlainText("\n".join(self._log_lines) or "No log yet.")
         layout.addWidget(text)
-        close = self._push("Luk", "secondary")
+        close = self._push("Close", "secondary")
         close.clicked.connect(dialog.accept)
         layout.addWidget(close, 0, Qt.AlignmentFlag.AlignLeft)
         dialog.exec()
@@ -1234,33 +1246,8 @@ def _is_dir(path: Path) -> bool:
 
 
 def resolve_save_folder(save_path: str | None) -> Path:
-    try:
-        locations = detect_save_folders()
-        override = Path(save_path) if save_path else None
-        return choose_save_folder(locations, override)
-    except FileNotFoundError as exc:
-        raise SavePathError(str(exc)) from exc
-    except OSError as exc:
-        raise SavePathError(
-            "could not find a Diablo II Resurrected save folder. "
-            "Set save_path in the config file."
-        ) from exc
-
-
-def locate_peer(peer_mode: str, peer: str | None, port: int, discover_port: int) -> tuple[str, int]:
-    if peer_mode == "manual":
-        if not peer:
-            raise D2RSyncError("no peer address configured")
-        return parse_peer(peer, port)
-    found = discover(discover_port, timeout=2.5)
-    if not found:
-        raise D2RSyncError(
-            "no peer answered LAN discovery. Start the other machine, or set a manual IP."
-        )
-    if len(found) > 1:
-        listed = ", ".join(item.label() for item in found)
-        raise D2RSyncError(f"more than one peer answered ({listed}). Set a manual IP.")
-    return found[0].host, found[0].port
+    chosen, _locations = configured_save_folder(save_path)
+    return chosen
 
 
 def _job_refresh(snap: SimpleNamespace) -> dict:
@@ -1286,7 +1273,7 @@ def _job_refresh(snap: SimpleNamespace) -> dict:
     try:
         save = resolve_save_folder(snap.save_path)
     except D2RSyncError as exc:
-        payload["error"] = danish_error(exc)
+        payload["error"] = user_error(exc)
         return payload
     payload["save"] = save
     try:
@@ -1295,12 +1282,12 @@ def _job_refresh(snap: SimpleNamespace) -> dict:
         payload["local_d2s"] = read_local_d2s(save)
         payload["synced_at"] = load_state(snap.state_file, save).synced_at
     except D2RSyncError as exc:
-        payload["error"] = danish_error(exc)
+        payload["error"] = user_error(exc)
         return payload
     if snap.role != "client":
         return payload
     if not snap.secret:
-        payload["error"] = "Angiv en delt hemmelighed under Indstillinger."
+        payload["error"] = "Enter a shared secret in Settings."
         return payload
     try:
         host, port = locate_peer(snap.peer_mode, snap.peer, snap.port, snap.discover_port)
@@ -1313,7 +1300,7 @@ def _job_refresh(snap: SimpleNamespace) -> dict:
             name=snap.name,
         )
     except Exception as exc:  # noqa: BLE001 — expected peer failures
-        payload["error"] = danish_error(exc)
+        payload["error"] = user_error(exc)
         return payload
     payload["connected"] = True
     payload["peer_name"] = preview.peer_name
@@ -1369,7 +1356,7 @@ def _job_test(snap: SimpleNamespace) -> str:
     host, port = locate_peer(snap.peer_mode, snap.peer, snap.port, snap.discover_port)
     conn = connect(host, port, snap.secret, snap.name, 8.0)
     RemoteSave(conn).close()
-    return f"Forbundet til {host}:{port}."
+    return f"Connected to {host}:{port}."
 
 
 def _make_server(snap: SimpleNamespace, root: Path, on_session, log) -> Server:
@@ -1424,10 +1411,10 @@ def _warning_html(text: str) -> str:
 
 def _policy_html(text: str) -> str:
     safe = html.escape(text)
-    if safe.startswith("Politik: ") and " – " in safe:
+    if safe.startswith("Policy: ") and " – " in safe:
         head, tail = safe.split(" – ", 1)
         _label, _sep, name = head.partition(": ")
-        return f"Politik: <b style='color:#e0b65a'>{name}</b> – {tail}"
+        return f"Policy: <b style='color:#e0b65a'>{name}</b> – {tail}"
     return safe
 
 

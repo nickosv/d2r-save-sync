@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from d2rsync.errors import SavePathError
 from d2rsync.paths import (
     STEAM_APPID,
     choose_save_folder,
+    configured_save_folder,
     detect_save_folders,
     parse_library_paths,
 )
@@ -218,6 +221,28 @@ class DetectTests(unittest.TestCase):
         finally:
             locked.chmod(0o700)
         self.assertEqual([item.path.resolve() for item in found], [saves.resolve()])
+
+    def test_configured_save_path_does_not_scan(self):
+        home = Path(self._tmp())
+        pinned = home / "pinned"
+        pinned.mkdir()
+        with mock.patch("d2rsync.paths.detect_save_folders", side_effect=AssertionError("scanned")):
+            chosen, locations = configured_save_folder(str(pinned))
+        self.assertEqual(chosen, pinned)
+        self.assertEqual(locations, [])
+        with mock.patch("d2rsync.paths.detect_save_folders", side_effect=AssertionError("scanned")):
+            with self.assertRaises(SavePathError):
+                configured_save_folder(str(home / "missing"))
+
+    def test_blank_save_path_still_scans(self):
+        with mock.patch("d2rsync.paths.detect_save_folders", return_value=[]) as scanned:
+            with self.assertRaises(SavePathError):
+                configured_save_folder(None)
+        scanned.assert_called_once()
+        with mock.patch("d2rsync.paths.detect_save_folders", return_value=[]) as scanned:
+            with self.assertRaises(SavePathError):
+                configured_save_folder("")
+        scanned.assert_called_once()
 
     def test_no_readable_save_folder_is_a_clear_error(self):
         with self.assertRaises(FileNotFoundError) as caught:
