@@ -51,7 +51,6 @@ from d2rsync.d2s import read_local_d2s
 from d2rsync.discover import locate_peer, safe_service_name
 from d2rsync.errors import D2RSyncError
 from d2rsync.game import game_is_running
-from d2rsync.model import Decision
 from d2rsync.names import (
     block_list,
     characters_in_folder,
@@ -76,6 +75,7 @@ from d2rsync.viewmodel import (
     apply_draft,
     build_result_view,
     build_rows,
+    format_inline_status,
     user_error,
     draft_from_config,
     gui_conflict_policy,
@@ -691,14 +691,19 @@ class MainWindow(QMainWindow):
                 self._update_path_label()
         self.local_files = payload.get("local_files") or {}
         self.local_d2s = payload.get("local_d2s") or {}
-        self.remote_files = payload.get("remote_files") or {}
-        self.remote_d2s = payload.get("remote_d2s") or {}
-        self.decisions = payload.get("decisions")
-        self.synced_at = payload.get("synced_at")
+        if payload.get("have_remote"):
+            self.remote_files = payload.get("remote_files") or {}
+            self.remote_d2s = payload.get("remote_d2s") or {}
+            self.decisions = payload.get("decisions")
+        incoming = payload.get("synced_at")
+        if incoming is not None and (self.synced_at is None or incoming >= self.synced_at):
+            self.synced_at = incoming
         self.connected = bool(payload.get("connected"))
         self.peer_game_running = bool(payload.get("peer_game"))
         if payload.get("peer_name"):
             self.peer_name = payload["peer_name"]
+        if payload.get("footer_peer"):
+            self.last_peer_name = payload["footer_peer"]
         if payload.get("peer_host"):
             self.peer_host = payload["peer_host"]
         if not self.connected and self.cfg.role == "client":
@@ -707,7 +712,7 @@ class MainWindow(QMainWindow):
         error = payload.get("error") or ""
         if self.game_running is None and not error:
             error = "Could not tell whether the game is running. Sync will continue."
-        if error:
+        if error and not self._note_sticky:
             self._note = error
             self._note_sticky = False
             if error != self._last_logged_note:
@@ -739,6 +744,9 @@ class MainWindow(QMainWindow):
             has_secret = bool(self.cfg.secret_value())
         except ConfigError:
             has_secret = False
+        choices = tuple(
+            (item.name, item.online) for item in characters_in_folder(self.save_folder)
+        )
         view = make_dashboard_view(
             rows=build_rows(
                 self.local_files,
@@ -747,6 +755,8 @@ class MainWindow(QMainWindow):
                 self.local_d2s,
                 self.remote_d2s,
                 datetime.now(),
+                tuple(self.cfg.exclude_characters or []),
+                choices,
             ),
             peer_name=self.peer_name,
             peer_host=self.peer_host,
@@ -778,11 +788,12 @@ class MainWindow(QMainWindow):
             self.warn.show()
         else:
             self.warn.hide()
-        headers = ["CHARACTER", "CLASS / LEVEL", "THIS PC", view.peer_header.upper(), "STATUS"]
+        headers = ["SYNC", "CHARACTER", "CLASS / LEVEL", "THIS PC", view.peer_header.upper(), "STATUS"]
         records = []
         for row in view.rows:
             records.append(
                 [
+                    self._include_cell(row),
                     _name_cell(row.title, row.detail),
                     _text_cell(row.subtitle, "charSub"),
                     _text_cell(row.local_time, "time", row.local_newer),
@@ -794,12 +805,56 @@ class MainWindow(QMainWindow):
             self.table_scroll,
             headers,
             records,
-            [4, 3, 3, 3, 3],
+            [2, 4, 3, 3, 3, 3],
             view.empty_text,
         )
         self.sync_btn.setText("⟳  " + view.button_text)
         self.sync_btn.setEnabled(view.button_enabled)
         self.footer.setText(view.footer)
+
+    def _include_cell(self, row) -> QWidget:
+        if row.kind != "character" or not row.name:
+            return _text_cell("", "hint")
+        box = QCheckBox()
+        box.setProperty("sync-character", row.name)
+        box.setChecked(row.included)
+        box.setEnabled(not row.include_locked)
+        if row.include_locked:
+            box.setToolTip("Online characters are not synced")
+        else:
+            box.setToolTip("Uncheck to leave this character out of sync")
+        box.toggled.connect(lambda checked, name=row.name: self._toggle_sync_character(name, checked))
+        wrap = QWidget()
+        wrap.setStyleSheet("background: transparent;")
+        layout = QHBoxLayout(wrap)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.addWidget(box)
+        layout.addStretch(1)
+        return wrap
+
+    def _toggle_sync_character(self, name: str, included: bool) -> None:
+        current = [
+            item
+            for item in (self.cfg.exclude_characters or [])
+            if item.casefold() != name.casefold()
+        ]
+        if not included:
+            current.append(name)
+        self.cfg.exclude_characters = current
+        try:
+            write_config(self.cfg, self._config_file)
+        except OSError as exc:
+            self._note = user_error(exc)
+            self._note_sticky = False
+        self._mirror_settings_checks()
+        self._render_dashboard_from_state()
+
+    def _mirror_settings_checks(self) -> None:
+        excluded = {item.casefold() for item in (self.cfg.exclude_characters or [])}
+        for name, box, online in self._character_checks:
+            box.blockSignals(True)
+            box.setChecked(online or name.casefold() in excluded)
+            box.blockSignals(False)
 
     def _render_result(self, view: ResultView) -> None:
         self.result_title.setText(view.title)
@@ -878,7 +933,32 @@ class MainWindow(QMainWindow):
         view = payload["view"]
         self._append_log(view.log_text)
         self._render_result(view)
-        self._show_page(1)
+        peer = str(payload.get("peer_name") or self.peer_name or "")
+        synced_at = payload.get("synced_at")
+        if synced_at is not None:
+            self.synced_at = synced_at
+        if peer:
+            self.last_peer_name = peer
+            self.peer_name = peer
+        if payload.get("refreshed"):
+            self.local_files = payload.get("local_files") or {}
+            self.remote_files = payload.get("remote_files") or {}
+            self.decisions = payload.get("decisions")
+            if payload.get("local_d2s") is not None:
+                self.local_d2s = payload["local_d2s"]
+            if payload.get("remote_d2s") is not None:
+                self.remote_d2s = payload["remote_d2s"]
+        summary = format_inline_status(
+            peer=peer,
+            synced_at=self.synced_at,
+            now=datetime.now(),
+            summary=view.pill,
+            dry_run=bool(payload.get("dry_run")),
+        )
+        self._session_note = summary
+        self._note = summary
+        self._note_sticky = True
+        self._show_page(0)
         self._render_dashboard_from_state()
         self.refresh()
 
@@ -975,11 +1055,14 @@ class MainWindow(QMainWindow):
         if notice.peer_host:
             self.peer_host = notice.peer_host
         if notice.phase == "connected":
+            keep_summary = self._note_sticky and self.host_activity == "waiting" and bool(self._note)
             self.host_activity = "connected"
             self.connected = True
-            self._note = notice.detail or f"{self.peer_name} connected."
-            self._note_sticky = True
-            self._append_log(self._note)
+            text = notice.detail or f"{self.peer_name} connected."
+            if not keep_summary:
+                self._note = text
+                self._note_sticky = True
+            self._append_log(text)
             self._render_dashboard_from_state()
             return
         if notice.phase == "progress":
@@ -998,14 +1081,18 @@ class MainWindow(QMainWindow):
         if notice.synced_at is not None:
             self.synced_at = notice.synced_at
             self.last_peer_name = notice.peer_name
+        if notice.peer_files:
+            self.remote_files = dict(notice.peer_files)
+            from d2rsync.plan import plan
+
+            self.decisions = plan(self.local_files, self.remote_files, {}, {})
         if not notice.show_result:
             if notice.detail:
                 self._note = notice.detail
                 self._note_sticky = True
                 self._append_log(notice.detail)
-            else:
+            elif not self._note_sticky:
                 self._note = ""
-                self._note_sticky = False
             self._render_dashboard_from_state()
             return
         view = build_result_view(
@@ -1022,10 +1109,17 @@ class MainWindow(QMainWindow):
         )
         self._append_log(view.log_text)
         self._render_result(view)
-        self._show_page(1)
-        self._session_note = notice.detail or f"Synced with {notice.peer_name}."
-        self._note = self._session_note
+        summary = format_inline_status(
+            peer=notice.peer_name,
+            synced_at=notice.synced_at,
+            now=datetime.now(),
+            summary=view.pill,
+            dry_run=notice.dry_run,
+        )
+        self._session_note = summary
+        self._note = summary
         self._note_sticky = True
+        self._show_page(0)
         self._render_dashboard_from_state()
         self.refresh()
 
@@ -1437,17 +1531,22 @@ def _job_refresh(snap: SimpleNamespace) -> dict:
         kept_d2s, _ignored = omit_blocked(d2s, {}, blocked)
         payload["local_files"] = files
         payload["local_d2s"] = kept_d2s
-        payload["synced_at"] = load_state(snap.state_file, save).synced_at
+        state = load_state(snap.state_file, save)
+        payload["synced_at"] = state.synced_at
+        payload["footer_peer"] = state.peer
     except D2RSyncError as exc:
         payload["error"] = user_error(exc)
         return payload
     if snap.role != "client":
-        if payload["synced_at"] is not None:
-            payload["remote_files"] = dict(payload["local_files"])
-            payload["decisions"] = [
-                Decision(name, "none", "match", "contents match", entry, entry)
-                for name, entry in payload["local_files"].items()
-            ]
+        if state.peer:
+            payload["peer_name"] = state.peer
+        if state.peer_files:
+            from d2rsync.plan import plan
+
+            remote = state.peer_entries()
+            payload["remote_files"] = remote
+            payload["decisions"] = plan(files, remote, {}, {})
+            payload["have_remote"] = True
         return payload
     if not snap.secret:
         payload["error"] = "Enter a shared secret in Settings."
@@ -1467,6 +1566,7 @@ def _job_refresh(snap: SimpleNamespace) -> dict:
         payload["error"] = user_error(exc)
         return payload
     payload["connected"] = True
+    payload["have_remote"] = True
     payload["peer_name"] = preview.peer_name
     payload["peer_host"] = preview.peer_host
     payload["remote_files"] = preview.remote_files
@@ -1474,6 +1574,8 @@ def _job_refresh(snap: SimpleNamespace) -> dict:
     payload["decisions"] = preview.decisions
     payload["peer_game"] = preview.peer_game_running
     payload["local_files"] = preview.local_files
+    if not payload.get("footer_peer"):
+        payload["footer_peer"] = preview.peer_name
     return payload
 
 
@@ -1514,7 +1616,22 @@ def _job_sync(snap: SimpleNamespace) -> dict:
         now=datetime.now(),
         log_text=log_text,
     )
-    return {"view": view, "save": root}
+    from d2rsync.plan import plan
+
+    refreshed = bool(notes.get("refreshed"))
+    local_after = dict(notes.get("local_files_after") or {})
+    remote_after = dict(notes.get("remote_files_after") or {})
+    return {
+        "view": view,
+        "save": root,
+        "synced_at": notes.get("synced_at"),
+        "peer_name": peer_name,
+        "local_files": local_after,
+        "remote_files": remote_after,
+        "decisions": plan(local_after, remote_after, {}, {}) if refreshed else None,
+        "refreshed": refreshed,
+        "dry_run": bool(snap.dry_run),
+    }
 
 
 def _job_test(snap: SimpleNamespace) -> str:

@@ -7,6 +7,7 @@ import struct
 import tempfile
 import threading
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from d2rsync.backup import BackupManager
@@ -15,7 +16,7 @@ from d2rsync.errors import AuthError, GameRunningError, ProtocolError
 from d2rsync.hashing import sha256_bytes
 from d2rsync.protocol import Conn
 from d2rsync.server import Server
-from d2rsync.state import load_state
+from d2rsync.state import SyncState, load_state, save_key
 from d2rsync.store import DirectorySave
 from tests.support import write_file
 
@@ -225,6 +226,62 @@ class TransferTests(unittest.TestCase):
             conn.sock.close()
         self.assertFalse((self.remote_root / "Bloodoath.map").exists())
         self.assertEqual((self.remote_root / "Bloodoath.keyo").read_bytes(), b"keys")
+
+    def test_deck_sync_gives_morga_the_newer_pc_time_and_both_sides_record_it(self):
+        """Same bytes, older Deck mtime: a Deck sync must adopt the PC time.
+
+        The Sync screen shows that older mtime as 23 Oct and the PC time as
+        yesterday. Leaving the file untouched keeps both labels forever, and
+        the first sync's clock stays in the footer unless both state files
+        record the new time and the peer.
+        """
+        now = datetime.now().replace(microsecond=0)
+        pc_time = (now - timedelta(days=1)).replace(hour=18, minute=0, second=0).timestamp()
+        deck_time = (now - timedelta(days=2)).replace(hour=9, minute=0, second=0).timestamp()
+        first = (now - timedelta(days=1)).replace(hour=20, minute=22, second=0).timestamp()
+        data = b"morga-from-pc"
+        digest = sha256_bytes(data)
+        write_file(self.remote_root, "Morga.d2s", data, pc_time)
+        write_file(self.local_root, "Morga.d2s", data, deck_time)
+        self._remember(self.local_state, self.local_root, digest, first)
+        self._remember(self.remote_state, self.remote_root, digest, first)
+        self._start()
+        self._sync(conflict="keep-both")
+        self.assertEqual((self.local_root / "Morga.d2s").read_bytes(), data)
+        self.assertAlmostEqual((self.local_root / "Morga.d2s").stat().st_mtime, pc_time, delta=2)
+        self._assert_both_recorded_the_new_sync(first)
+
+    def test_deck_sync_pulls_a_newer_pc_edit_of_morga(self):
+        """A later PC edit must land on the Deck when the Deck starts the sync."""
+        now = datetime.now().replace(microsecond=0)
+        pc_time = (now - timedelta(days=1)).replace(hour=18, minute=5, second=0).timestamp()
+        deck_time = (now - timedelta(days=2)).replace(hour=9, minute=0, second=0).timestamp()
+        first = (now - timedelta(days=1)).replace(hour=20, minute=22, second=0).timestamp()
+        original = b"morga-october-23"
+        edited = b"morga-edited-on-pc"
+        write_file(self.remote_root, "Morga.d2s", edited, pc_time)
+        write_file(self.local_root, "Morga.d2s", original, deck_time)
+        self._remember(self.local_state, self.local_root, sha256_bytes(original), first)
+        self._remember(self.remote_state, self.remote_root, sha256_bytes(original), first)
+        self._start()
+        self._sync(conflict="keep-both")
+        self.assertEqual((self.local_root / "Morga.d2s").read_bytes(), edited)
+        self.assertEqual((self.remote_root / "Morga.d2s").read_bytes(), edited)
+        self.assertAlmostEqual((self.local_root / "Morga.d2s").stat().st_mtime, pc_time, delta=2)
+        self._assert_both_recorded_the_new_sync(first)
+
+    def _remember(self, path: Path, root: Path, digest: str, when: float) -> None:
+        SyncState(path, save_key(root), {"Morga.d2s": digest}).mark_synced(when)
+
+    def _assert_both_recorded_the_new_sync(self, first: float) -> None:
+        deck = load_state(self.local_state, self.local_root)
+        pc = load_state(self.remote_state, self.remote_root)
+        self.assertIsNotNone(deck.synced_at)
+        self.assertIsNotNone(pc.synced_at)
+        self.assertGreater(deck.synced_at, first)
+        self.assertGreater(pc.synced_at, first)
+        self.assertEqual(deck.peer, "pc")
+        self.assertEqual(pc.peer, "deck")
 
     def test_local_game_running_refuses_before_connect(self):
         self._start()
