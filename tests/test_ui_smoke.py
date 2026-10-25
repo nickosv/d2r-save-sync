@@ -64,6 +64,7 @@ class WindowSmokeTests(unittest.TestCase):
         directory = Path(tempfile.mkdtemp())
         window = MainWindow(autostart=False, config_file=directory / "config.json")
         window.resize(1280, 800)
+        self.assertFalse(window.windowIcon().isNull())
         window.dry.setChecked(True)
         window.show_dashboard_view(mockup_dashboard())
         window.show()

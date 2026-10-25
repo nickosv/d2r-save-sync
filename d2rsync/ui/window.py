@@ -134,6 +134,7 @@ class MainWindow(QMainWindow):
     def __init__(self, autostart: bool = True, config_file: Path | None = None):
         super().__init__()
         self.setWindowTitle("D2R Save Sync")
+        self._apply_window_icon()
         self.resize(1280, 800)
         self.setMinimumSize(1100, 700)
         self._config_file = Path(config_file) if config_file is not None else None
@@ -192,6 +193,18 @@ class MainWindow(QMainWindow):
         if autostart:
             self._timer.start()
             QTimer.singleShot(0, self.refresh)
+
+    def _apply_window_icon(self) -> None:
+        from PySide6.QtGui import QIcon
+
+        from d2rsync.shortcuts import ShortcutError, icon_path
+
+        try:
+            icon = QIcon(str(icon_path()))
+        except (OSError, ShortcutError):
+            return
+        if not icon.isNull():
+            self.setWindowIcon(icon)
 
     def _build(self) -> None:
         root = Backdrop()

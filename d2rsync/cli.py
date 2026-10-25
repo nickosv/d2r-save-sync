@@ -40,27 +40,43 @@ class Log:
         self.verbose = verbose
 
     def info(self, message: str) -> None:
-        print(message)
+        _emit(sys.stdout, message)
 
     def warn(self, message: str) -> None:
-        print(f"warning: {message}", file=sys.stderr)
+        _emit(sys.stderr, f"warning: {message}")
 
     def error(self, message: str) -> None:
-        print(f"error: {message}", file=sys.stderr)
+        _emit(sys.stderr, f"error: {message}")
 
     def debug(self, message: str) -> None:
         if self.verbose:
-            print(f"debug: {message}", file=sys.stderr)
+            _emit(sys.stderr, f"debug: {message}")
+
+
+def _emit(stream, message: str) -> None:
+    """Print when a console exists. pythonw.exe sets stdout and stderr to None."""
+    if stream is None:
+        return
+    try:
+        print(message, file=stream)
+    except (AttributeError, OSError):
+        return
 
 
 def main(argv: list[str] | None = None) -> int:
     args_list = list(sys.argv[1:] if argv is None else argv)
+    if args_list == ["--create-shortcuts"]:
+        return cmd_shortcuts()
     if not args_list:
         return launch_gui()
     _ensure_windows_console(args_list)
     parser = argparse.ArgumentParser(
         prog="d2rsync",
         description="Sync Diablo II: Resurrected offline saves between a Windows PC and a Steam Deck.",
+        epilog=(
+            "On Windows, `py -m d2rsync --create-shortcuts` adds Desktop and Start menu "
+            "shortcuts. Each shortcut runs pythonw.exe with `-m d2rsync`."
+        ),
     )
     parser.add_argument("--version", action="version", version=f"d2rsync {__version__}")
     common = argparse.ArgumentParser(add_help=False)
@@ -135,12 +151,25 @@ def launch_gui() -> int:
     try:
         from d2rsync.ui.app import run
     except ImportError:
-        print(
-            "The graphical window needs PySide6. Install it with: pip install 'd2r-save-sync[gui]'",
-            file=sys.stderr,
+        _emit(
+            sys.stderr,
+            "The graphical window needs PySide6. Install it with: py -m pip install --user d2r-save-sync",
         )
         return 1
     return run()
+
+
+def cmd_shortcuts() -> int:
+    from d2rsync.shortcuts import ShortcutError, install_shortcuts
+
+    try:
+        written = install_shortcuts()
+    except ShortcutError as exc:
+        _emit(sys.stderr, f"error: {exc}")
+        return 1
+    for path in written:
+        _emit(sys.stdout, str(path))
+    return 0
 
 
 def _ensure_windows_console(args_list: list[str]) -> None:
