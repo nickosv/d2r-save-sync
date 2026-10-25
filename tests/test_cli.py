@@ -26,7 +26,10 @@ class CliTests(unittest.TestCase):
             with redirect_stdout(stdout), redirect_stderr(stderr):
                 main(["--help"])
         self.assertEqual(caught.exception.code, 0)
-        self.assertIn("gui", stdout.getvalue())
+        text = stdout.getvalue()
+        self.assertIn("gui", text)
+        self.assertIn("--create-shortcuts", text)
+        self.assertIn("pythonw.exe", text)
 
     def test_init_path_status_and_sync(self):
         tmp = Path(tempfile.mkdtemp())

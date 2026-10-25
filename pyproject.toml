@@ -4,19 +4,22 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "d2r-save-sync"
-version = "0.2.2"
+version = "0.2.3"
 description = "Sync Diablo II: Resurrected offline saves between a Windows PC and a Steam Deck over the LAN"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
-dependencies = []
+dependencies = ["PySide6>=6.6,<7"]
 
 [project.optional-dependencies]
 gui = ["PySide6>=6.6,<7"]
 
-[project.scripts]
-d2rsync = "d2rsync.cli:main"
-d2rsync-gui = "d2rsync.gui_entry:main"
+# No console_scripts. pip would write unsigned .exe launchers next to Python,
+# and Windows Smart App Control can block those. Start the window with
+# pythonw.exe -m d2rsync. The shortcut command is `py -m d2rsync --create-shortcuts`.
 
 [tool.setuptools.packages.find]
 include = ["d2rsync*"]
+
+[tool.setuptools.package-data]
+d2rsync = ["assets/*.ico"]

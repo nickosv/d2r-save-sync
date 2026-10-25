@@ -63,10 +63,47 @@ To restore: quit the game, copy the file you want back to the save folder under 
 
 ## Install
 
-Put this repository on both machines. Any folder is fine. Examples used below:
+### Windows 11
 
-- Windows: `C:\Games\d2r-save-sync`
-- Steam Deck: `/home/deck/d2r-save-sync`
+Windows Smart App Control blocks the unsigned `D2RSaveSync.exe` from the build artifacts. Install the app as a normal Python package and start it with `pythonw.exe` from [python.org](https://www.python.org/downloads/windows/). That interpreter is signed. The shortcut points straight at `pythonw.exe` with the arguments `-m d2rsync` and the application icon. Nothing in this path is a `.bat`, a `.ps1`, or another `.exe`.
+
+Open PowerShell and paste these three commands. Skip the first one when `py` already runs a Python you installed from python.org.
+
+```powershell
+winget install --id Python.Python.3.12 -e --accept-package-agreements --accept-source-agreements
+py -m pip install --user https://github.com/nickosv/d2r-save-sync/archive/refs/heads/main.zip
+py -m d2rsync --create-shortcuts
+```
+
+If `py` is not recognized after the winget install, close PowerShell, open a new window, and run the `pip` and `--create-shortcuts` lines again.
+
+`--create-shortcuts` writes two shortcuts named **D2R Save Sync**, one on the Desktop and one in the Start menu. Each one runs:
+
+```text
+pythonw.exe -m d2rsync
+```
+
+`pythonw.exe` is the no-console companion of `python.exe`, so the window opens without a command prompt. The icon is the `.ico` shipped inside the package. Double-click the shortcut to open the same PySide6 window.
+
+Your settings and sync history stay where they already are. Installing or updating does not move them:
+
+| File | Path |
+| --- | --- |
+| Settings | `%APPDATA%\d2r-save-sync\config.json` |
+| Last sync | `%APPDATA%\d2r-save-sync\state.json` |
+
+To update later, paste:
+
+```powershell
+py -m pip install --user --upgrade https://github.com/nickosv/d2r-save-sync/archive/refs/heads/main.zip
+py -m d2rsync --create-shortcuts
+```
+
+The second line refreshes the shortcuts so they keep pointing at this Python and the current icon.
+
+### Steam Deck and a checkout of the source
+
+Put this repository on the machine. Any folder is fine. Example: `/home/deck/d2r-save-sync`.
 
 You can run it without installing:
 
@@ -74,15 +111,7 @@ You can run it without installing:
 python3 -m d2rsync --help
 ```
 
-On Windows, `py -3 -m d2rsync --help` does the same thing if the Python launcher is installed.
-
-Optional, if you want a `d2rsync` command on `PATH`:
-
-```bash
-pip install .
-```
-
-The window is an extra:
+The window needs PySide6. A `pip install` from the commands above includes it. From a git checkout:
 
 ```bash
 pip install ".[gui]"
@@ -235,7 +264,7 @@ If Konsole is not available, point **Target** at `/bin/bash` and set **Launch Op
 
 ### Standalone executable, no Python install
 
-GitHub Actions builds two single-file programs on every push: `D2RSaveSync` for Linux, and `D2RSaveSync.exe` for Windows. Download them from the workflow artifacts. You can also build locally after `pip install -e ".[gui]" pyinstaller`:
+GitHub Actions builds two single-file programs on every push: `D2RSaveSync` for Linux, and `D2RSaveSync.exe` for Windows. Download them from the workflow artifacts. On Windows 11, Smart App Control blocks that unsigned exe. Use the [Windows 11](#windows-11) install above instead of the exe. The Linux binary is the one to copy to a Steam Deck that does not have Python. You can also build locally after `pip install -e ".[gui]" pyinstaller`:
 
 ```bash
 pyinstaller --noconfirm --clean D2RSaveSync.spec
@@ -353,6 +382,8 @@ The sync and conflict rules are covered without a network. A second set of tests
 
 **Firewall prompt.** Allow the app on private networks only. The standalone executable triggers the same prompt the first time it listens or connects.
 
-**The window says PySide6 is missing.** Install the extra: `pip install 'd2r-save-sync[gui]'`. The CLI does not need it.
+**The window says PySide6 is missing.** From a git checkout, install the extra: `pip install 'd2r-save-sync[gui]'`. The Windows install command above already includes PySide6. The command-line subcommands do not import it.
+
+**Windows Smart App Control blocks `D2RSaveSync.exe`.** That file is unsigned. Install with the PowerShell commands in [Windows 11](#windows-11) and start **D2R Save Sync** from the Desktop or Start menu shortcut.
 
 **The standalone build opens and closes immediately on the Deck.** Run it once from Konsole. A missing `.so` is almost always a graphics library; SteamOS updates include them. `QT_QPA_PLATFORM=xcb` forces the XWayland backend, which Game Mode already provides.
