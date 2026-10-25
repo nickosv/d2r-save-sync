@@ -9,10 +9,16 @@ from tests.support import entry
 
 
 class PlanTests(unittest.TestCase):
-    def test_identical_content_is_in_sync_even_if_mtimes_differ(self):
-        local = entry(b"same", 10)
-        remote = entry(b"same", 99)
-        decision = plan_file("Hero.d2s", local, remote, None, None)
+    def test_identical_content_copies_the_newer_modification_time(self):
+        newer_remote = plan_file("Hero.d2s", entry(b"same", 10), entry(b"same", 99), None, None)
+        self.assertEqual(newer_remote.action, "pull")
+        self.assertEqual(newer_remote.reason_code, "mtime")
+        newer_local = plan_file("Hero.d2s", entry(b"same", 99), entry(b"same", 10), None, None)
+        self.assertEqual(newer_local.action, "push")
+        self.assertEqual(newer_local.reason_code, "mtime")
+
+    def test_identical_content_within_the_tie_window_stays_put(self):
+        decision = plan_file("Hero.d2s", entry(b"same", 10), entry(b"same", 11), None, None)
         self.assertEqual(decision.action, "none")
         self.assertEqual(decision.reason_code, "match")
 

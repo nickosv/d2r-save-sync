@@ -24,13 +24,14 @@ Left alone on purpose: `.keyo` and `.ctlo` (online keymap and controller files),
 
 Each machine remembers the SHA-256 of every file at the last successful sync.
 
-- Same bytes on both sides: nothing is copied, even if the timestamps differ.
+- Same bytes on both sides, and the modification times are within two seconds: nothing is copied.
+- Same bytes, but one copy's modification time is newer by more than two seconds: that newer time is written onto the older file, so both machines show the same date. The bytes do not change.
 - One side changed since that shared hash, the other did not: the changed copy wins.
 - A file exists on only one side and was never synced: it is copied across.
 - A file was deleted on one side and the surviving copy was not edited: the deletion is applied. The deleted bytes are backed up first.
 - Both sides changed, or a deletion meets an edit, or two machines both have the file and have never synced: that is a conflict.
 
-Modification time is used only to pick a winner **after** a conflict is detected. A two-second gap is treated as a tie, because FAT, NTFS, and ext4 do not agree about sub-second timestamps. If the clocks on the two machines differ by more than two minutes, the tool warns before using timestamps.
+A two-second gap is treated as a tie, because FAT, NTFS, and ext4 do not agree about sub-second timestamps. If the clocks on the two machines differ by more than two minutes, the tool warns before using timestamps. Modification time also picks a winner after a conflict is detected.
 
 ### Conflict policy
 
@@ -126,13 +127,13 @@ The window is laid out for 1280×800, with large buttons for the Steam Deck touc
 
 What the three screens do:
 
-- **Sync** lists each character and the shared stash, with class, level, and the last-modified time on this machine and on the peer. The status badges are Send, Receive, Conflict, and Up to date. **Sync now** connects and syncs. **Dry run** shows what would happen. If D2R is running and blocking is on, the list still loads but the sync button stays disabled.
-- **Result** shows the last run. A conflict card explains which copy becomes the live character and which copy is archived. The table lists every other file, the action, and the backup folder.
-- **Settings** sets the save folder, host or connect mode, automatic or manual peer discovery, the peer IP and port, the shared secret, how many days of backups to keep, whether to block while `D2R.exe` is running, and which characters to leave out. Online characters are checked and locked. A checked offline character is saved in `exclude_characters` and skipped on both machines.
+- **Sync** lists each character and the shared stash, with class, level, and the last-modified time on this machine and on the peer. The status badges are Send, Receive, Conflict, and Up to date. Each character has a checkbox: uncheck it to leave that character out of sync. The choice is saved in `exclude_characters` immediately, and the same list is on Settings. Online characters are unchecked and locked. **Sync now** connects and syncs. **Dry run** shows what would happen. If D2R is running and blocking is on, the list still loads but the sync button stays disabled. When the sync finishes, the window stays here and writes the counts, conflicts, and time under the list. Both machines update **Last sync** and the peer name, and both file lists are read again from the save folders.
+- **Result** keeps the last run for review. A conflict card explains which copy becomes the live character and which copy is archived. The table lists every other file, the action, and the backup folder. A finished sync does not switch to this screen on its own.
+- **Settings** sets the save folder, host or connect mode, automatic or manual peer discovery, the peer IP and port, the shared secret, how many days of backups to keep, whether to block while `D2R.exe` is running, and which characters to leave out. Online characters are checked and locked. A checked offline character is saved in `exclude_characters` and skipped on both machines. That is the same list as the checkboxes on Sync.
 
 The window never asks a conflict question on stdin. If the config says `newest`, that policy is used. `keep-both` and `ask` both become keep-both in the window, so the older file is archived and nothing is left for a later prompt. `ask` remains available in the CLI.
 
-In **Connect** mode, **Sync now** discovers the peer (or uses the manual IP) and syncs. In **Host** mode the button is **Start host**: this machine listens, and the other one connects. The dashboard shows the peer name and IP while that machine is connected, what is being copied, and then returns to waiting so the next sync can start without pressing Start host again. A finished sync opens **Result** (files sent, files received, conflicts, and the backup folder) and the dashboard footer keeps the last sync time and peer. The file list refreshes afterward. A dashboard refresh from the other machine connects only briefly and does not count as a sync. Network and sync work run off the UI thread. The sync button uses the same peer settings as **Test connection**, including a manual IP that has not been saved yet.
+In **Connect** mode, **Sync now** discovers the peer (or uses the manual IP) and syncs. In **Host** mode the button is **Start host**: this machine listens, and the other one connects. The dashboard shows the peer name and IP while that machine is connected, what is being copied, and then returns to waiting so the next sync can start without pressing Start host again. A finished sync stays on **Sync**. The line under the list gives the file count, any conflicts, and the time, and the footer records that time and the peer on both machines. The character times are read from the files after the copy, including a newer modification time when the bytes were already the same. A dashboard refresh from the other machine connects only briefly and does not count as a sync. Network and sync work run off the UI thread. The sync button uses the same peer settings as **Test connection**, including a manual IP that has not been saved yet.
 
 A preview while the game is open is read-only, so the dashboard can show the table with the button disabled. An actual sync still refuses.
 

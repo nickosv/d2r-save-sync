@@ -14,7 +14,7 @@ from d2rsync.discover import DiscoveryServer, safe_service_name
 from d2rsync.errors import GameRunningError, ProtocolError, SyncIOError
 from d2rsync.game import game_is_running
 from d2rsync.hashing import sha256_bytes
-from d2rsync.model import Outcome
+from d2rsync.model import Entry, Outcome
 from d2rsync.names import (
     block_list,
     list_save_filenames,
@@ -42,6 +42,7 @@ class HostNotice:
     synced_at: float | None = None
     show_result: bool = False
     dry_run: bool = False
+    peer_files: dict | None = None
 
 
 class Server:
@@ -280,7 +281,8 @@ class Server:
                 except OSError as exc:
                     self.log.warn(f"could not prune backups: {exc}")
                 self.log.info(f"{peer_name} finished")
-                self._finish_session(peer_name, peer_host)
+                reported = _entries(message.get("files")) if "files" in message else None
+                self._finish_session(peer_name, peer_host, reported)
                 conn.send_msg({"t": "bye_ok"})
                 return True
             try:
@@ -294,7 +296,7 @@ class Server:
         self._notice("finished", peer_name, peer_host, detail=f"{peer_name} disconnected.")
         return False
 
-    def _finish_session(self, peer_name: str, peer_host: str) -> None:
+    def _finish_session(self, peer_name: str, peer_host: str, peer_files: dict | None = None) -> None:
         if self._mode == "preview":
             self._notice("finished", peer_name, peer_host, detail="")
             return
@@ -304,6 +306,7 @@ class Server:
                 peer_name,
                 peer_host,
                 detail=f"Dry run from {peer_name}. Nothing was written.",
+                dry_run=True,
             )
             return
         synced_at = None
@@ -312,7 +315,7 @@ class Server:
             detail = f"Sync with {peer_name} stopped."
         else:
             try:
-                self.state.mark_synced()
+                self.state.mark_synced(peer=peer_name, peer_files=peer_files)
                 synced_at = self.state.synced_at
             except OSError as exc:
                 self.log.warn(f"could not record the sync time: {exc}")
@@ -325,6 +328,7 @@ class Server:
             outcomes=tuple(self._outcomes),
             synced_at=synced_at,
             show_result=True,
+            peer_files=self.state.peer_entries() if peer_files is not None else None,
         )
 
     def _dispatch(self, conn: Conn, message: dict, force: bool, peer_name: str) -> None:
@@ -443,6 +447,21 @@ class Server:
         running = self.game_check()
         if running:
             raise GameRunningError("Diablo II: Resurrected is running on this machine")
+
+
+def _entries(raw) -> dict:
+    """File metadata from a bye message. Junk entries are ignored."""
+    if not isinstance(raw, dict):
+        return {}
+    found = {}
+    for name, payload in raw.items():
+        if not isinstance(name, str) or not isinstance(payload, dict):
+            continue
+        try:
+            found[name] = Entry.from_json(payload)
+        except (KeyError, TypeError, ValueError):
+            continue
+    return found
 
 
 class _NullLog:

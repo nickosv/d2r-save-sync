@@ -257,7 +257,7 @@ class WindowSmokeTests(unittest.TestCase):
         window.close()
 
     def test_host_notice_opens_the_result_and_returns_to_waiting(self):
-        from PySide6.QtWidgets import QLabel
+        from PySide6.QtWidgets import QCheckBox, QLabel
 
         from d2rsync.model import Outcome
         from d2rsync.server import HostNotice
@@ -311,8 +311,8 @@ class WindowSmokeTests(unittest.TestCase):
         if window._worker is not None:
             window._worker.wait(8000)
         self.app.processEvents()
-        self.assertEqual(window.stack.currentIndex(), 1)
-        self.assertIn("1 file synced", window.result_pill_text.text())
+        self.assertEqual(window.stack.currentIndex(), 0)
+        self.assertIn("1 file synced", window.dash_note.text())
         texts = " ".join(label.text() for label in window.findChildren(QLabel))
         self.assertIn("Sent to steamdeck", texts)
         self.assertTrue(window.hosting)
@@ -326,9 +326,178 @@ class WindowSmokeTests(unittest.TestCase):
         self.assertIn("waiting for the other machine", window.dash_pill_text.text())
         self.assertIn("steamdeck", window.footer.text())
         labels = " ".join(label.text() for label in window.findChildren(QLabel))
-        self.assertIn("Up to date", labels)
-        self.assertNotIn("Bloodoath", labels)
+        self.assertIn("Bloodoath", labels)
+        online = [
+            box
+            for box in window.findChildren(QCheckBox)
+            if box.property("sync-character") == "Bloodoath"
+        ]
+        self.assertTrue(online)
+        self.assertFalse(online[0].isChecked())
+        self.assertFalse(online[0].isEnabled())
         window.close()
+
+    def test_sync_screen_checkboxes_persist_exclude_and_lock_online(self):
+        from PySide6.QtWidgets import QCheckBox
+
+        from d2rsync.ui.window import MainWindow
+        from tests.support import write_file
+
+        directory = Path(tempfile.mkdtemp())
+        saves = directory / "saves"
+        saves.mkdir()
+        write_file(saves, "Morga.d2s", b"morga")
+        write_file(saves, "Hero.d2s", b"hero")
+        write_file(saves, "Bloodoath.keyo", b"keys")
+        write_file(saves, "Bloodoath.ctlo", b"pad")
+        window = MainWindow(autostart=False, config_file=directory / "config.json")
+        window.cfg.secret = "shared-secret"
+        window.cfg.save_path = str(saves)
+        window._pinned = True
+        window.path_edit.setText(str(saves))
+        window.save_folder = saves
+        window._render_dashboard_from_state()
+        self.app.processEvents()
+        boxes = {
+            box.property("sync-character"): box
+            for box in window.findChildren(QCheckBox)
+            if box.property("sync-character")
+        }
+        self.assertEqual(set(boxes), {"Morga", "Hero", "Bloodoath"})
+        self.assertTrue(boxes["Morga"].isChecked())
+        self.assertTrue(boxes["Hero"].isChecked())
+        self.assertFalse(boxes["Bloodoath"].isChecked())
+        self.assertFalse(boxes["Bloodoath"].isEnabled())
+        boxes["Morga"].setChecked(False)
+        self.app.processEvents()
+        loaded = load_config(directory / "config.json")
+        self.assertEqual(loaded.exclude_characters, ["Morga"])
+        self.assertNotIn("Bloodoath", loaded.exclude_characters)
+        window.close()
+
+    def test_deck_sync_stays_on_sync_and_refreshes_both_machines(self):
+        """Morga must not keep yesterday vs 23 Oct, and Last sync must move."""
+        import threading
+        from datetime import datetime, timedelta
+
+        from PySide6.QtWidgets import QLabel
+
+        from d2rsync.backup import BackupManager
+        from d2rsync.hashing import sha256_bytes
+        from d2rsync.server import Server
+        from d2rsync.state import SyncState, save_key
+        from d2rsync.store import DirectorySave
+        from d2rsync.ui.window import MainWindow
+        from d2rsync.viewmodel import format_when
+        from tests.support import write_file
+
+        now = datetime.now().replace(microsecond=0)
+        pc_time = (now - timedelta(days=1)).replace(hour=18, minute=0, second=0).timestamp()
+        deck_time = (now - timedelta(days=2)).replace(hour=9, minute=0, second=0).timestamp()
+        first = (now - timedelta(days=1)).replace(hour=20, minute=22, second=0).timestamp()
+        data = b"morga-from-pc"
+        digest = sha256_bytes(data)
+        root = Path(tempfile.mkdtemp())
+        deck_root = root / "deck"
+        pc_root = root / "pc"
+        deck_root.mkdir()
+        pc_root.mkdir()
+        write_file(pc_root, "Morga.d2s", data, pc_time)
+        write_file(deck_root, "Morga.d2s", data, deck_time)
+
+        deck = MainWindow(autostart=False, config_file=root / "deck-config" / "config.json")
+        host = MainWindow(autostart=False, config_file=root / "pc-config" / "config.json")
+        SyncState(deck._state_file(), save_key(deck_root), {"Morga.d2s": digest}).mark_synced(first)
+        SyncState(host._state_file(), save_key(pc_root), {"Morga.d2s": digest}).mark_synced(first)
+
+        server_box: dict = {}
+
+        def forward(notice):
+            host.host_notice.emit(notice)
+
+        save = DirectorySave(pc_root, BackupManager(pc_root))
+        server = Server(
+            save,
+            SyncState(host._state_file(), save_key(pc_root), {"Morga.d2s": digest}, first),
+            "shared-secret",
+            host="127.0.0.1",
+            port=0,
+            name="pc",
+            discover=False,
+            fail_delay=0,
+            game_check=lambda: False,
+            on_notice=forward,
+        )
+        server_box["server"] = server
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        server.wait_until_listening()
+        try:
+            self._arm_client(deck, deck_root, server.bound_port)
+            deck.cfg.name = "deck"
+            host.role.set_current("host")
+            host.cfg.role = "host"
+            host.cfg.name = "pc"
+            host.cfg.secret = "shared-secret"
+            host.cfg.save_path = str(pc_root)
+            host.secret.setText("shared-secret")
+            host._pinned = True
+            host.path_edit.setText(str(pc_root))
+            host.save_folder = pc_root
+            host.hosting = True
+            host.synced_at = first
+            host.last_peer_name = "deck"
+            host.show()
+            deck.show()
+            self.app.processEvents()
+
+            deck._start_sync()
+            self._drain(deck)
+            self._drain(host)
+
+            self.assertEqual(deck.stack.currentIndex(), 0, deck.dash_note.text())
+            self.assertEqual(host.stack.currentIndex(), 0, host.dash_note.text())
+            stale = format_when(deck_time, datetime.now())
+            current = format_when(pc_time, datetime.now())
+            first_label = format_when(first, datetime.now())
+            for window, peer in ((deck, "pc"), (host, "deck")):
+                labels = " ".join(label.text() for label in window.findChildren(QLabel))
+                self.assertNotIn(stale, labels, labels)
+                self.assertGreaterEqual(labels.count(current), 2, labels)
+                self.assertNotIn(first_label, window.footer.text(), window.footer.text())
+                self.assertIn(peer, window.footer.text())
+                self.assertIn("file", window.dash_note.text().lower(), window.dash_note.text())
+        finally:
+            server.stop()
+            thread.join(timeout=3)
+            deck.close()
+            host.close()
+
+    def _arm_client(self, window, folder: Path, port: int) -> None:
+        window.role.set_current("client")
+        window.peer_mode.set_current("manual")
+        window.host_edit.setText("127.0.0.1")
+        window.port.setValue(port)
+        window.secret.setText("shared-secret")
+        window.block.setChecked(False)
+        window._pinned = True
+        window.path_edit.setText(str(folder))
+        window.save_folder = folder
+        window.cfg.role = "client"
+        window.cfg.peer_mode = "manual"
+        window.cfg.peer = "127.0.0.1"
+        window.cfg.port = port
+        window.cfg.secret = "shared-secret"
+        window.cfg.save_path = str(folder)
+        window.cfg.refuse_if_game_running = False
+
+    def _drain(self, window) -> None:
+        for _ in range(8):
+            self.app.processEvents()
+            worker = window._worker
+            if worker is not None and worker.isRunning():
+                worker.wait(8000)
+            self.app.processEvents()
 
 
 if __name__ == "__main__":

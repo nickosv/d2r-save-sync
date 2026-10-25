@@ -107,9 +107,16 @@ class RemoteSave:
         state = {str(name): str(digest) for name, digest in raw_state.items()}
         return files, state, float(reply.get("time", time.time()))
 
-    def close(self) -> None:
+    def close(self, files: dict | None = None) -> None:
+        payload: dict = {"t": "bye"}
+        if files:
+            payload["files"] = {
+                name: entry.to_json()
+                for name, entry in files.items()
+                if hasattr(entry, "to_json")
+            }
         try:
-            self.conn.send_msg({"t": "bye"})
+            self.conn.send_msg(payload)
             self.conn.recv_msg()
         except (ProtocolError, OSError):
             pass
@@ -218,6 +225,7 @@ def sync_with_peer(
     local = DirectorySave(local_root, backups)
     local_state = load_state(state_file, local_root)
     local_files = local.inventory()
+    report_files = None
     conn = connect(host, port, secret, name, timeout)
     remote = RemoteSave(conn)
     notes: dict = {"peer_name": host}
@@ -277,11 +285,22 @@ def sync_with_peer(
             loser_label_for_remote=f"from-{notes['peer_name']}",
         )
         if not dry_run and not any(item.op == "error" for item in outcomes):
-            backups.prune()
-            local_state.mark_synced()
+            try:
+                backups.prune()
+            except OSError as exc:
+                log.warn(f"could not prune backups: {exc}")
+            fresh_local, _ignored = omit_blocked(local.inventory(), {}, blocked)
+            fresh_remote, _remote_state, _remote_time = remote.manifest()
+            fresh_remote, _ignored = omit_blocked(fresh_remote, {}, blocked)
+            local_state.mark_synced(peer=str(notes["peer_name"]), peer_files=fresh_remote)
+            notes["synced_at"] = local_state.synced_at
+            notes["local_files_after"] = fresh_local
+            notes["remote_files_after"] = fresh_remote
+            notes["refreshed"] = True
+            report_files = fresh_local
         return resolved, outcomes, notes
     finally:
-        remote.close()
+        remote.close(report_files)
 
 
 def _local_block_list(local_root: Path, exclude_characters) -> list[str]:

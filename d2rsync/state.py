@@ -26,11 +26,15 @@ class SyncState:
         folder_key: str,
         files: dict[str, str] | None = None,
         synced_at: float | None = None,
+        peer: str = "",
+        peer_files: dict | None = None,
     ):
         self.path = Path(path)
         self.folder_key = folder_key
         self.files: dict[str, str] = dict(files or {})
         self.synced_at = synced_at
+        self.peer = peer or ""
+        self.peer_files: dict = dict(peer_files or {})
 
     def hash_for(self, rel: str) -> str | None:
         return self.files.get(rel)
@@ -44,17 +48,46 @@ class SyncState:
     def as_dict(self) -> dict[str, str]:
         return dict(self.files)
 
-    def mark_synced(self, when: float | None = None) -> None:
+    def mark_synced(
+        self,
+        when: float | None = None,
+        *,
+        peer: str | None = None,
+        peer_files: dict | None = None,
+    ) -> None:
+        """Record a finished sync. Omitted peer data keeps the previous value."""
         self.synced_at = time.time() if when is None else when
+        if peer:
+            self.peer = peer
+        if peer_files is not None:
+            self.peer_files = _encode_peer_files(peer_files)
         self.save()
+
+    def peer_entries(self) -> dict:
+        """Files the other machine reported at the last sync, keyed by name."""
+        from d2rsync.model import Entry
+
+        found = {}
+        for name, payload in self.peer_files.items():
+            if not isinstance(payload, dict):
+                continue
+            try:
+                found[str(name)] = Entry.from_json(payload)
+            except (KeyError, TypeError, ValueError):
+                continue
+        return found
 
     def save(self) -> None:
         payload = _read_document(self.path)
         folders = payload.setdefault("folders", {})
-        if self.files or self.synced_at is not None:
+        if self.files or self.synced_at is not None or self.peer or self.peer_files:
             folder = {"files": self.files}
             if self.synced_at is not None:
                 folder["synced_at"] = self.synced_at
+            if self.peer:
+                folder["peer"] = self.peer
+            if self.peer_files:
+                folder["peer_files"] = self.peer_files
             folders[self.folder_key] = folder
         else:
             folders.pop(self.folder_key, None)
@@ -68,15 +101,46 @@ def load_state(path: Path, save_root: Path) -> SyncState:
     raw = folder.get("files", {}) if isinstance(folder, dict) else {}
     files: dict[str, str] = {}
     synced_at = None
+    peer = ""
+    peer_files: dict = {}
     if isinstance(folder, dict):
         raw_time = folder.get("synced_at")
         if isinstance(raw_time, (int, float)):
             synced_at = float(raw_time)
+        raw_peer = folder.get("peer")
+        if isinstance(raw_peer, str):
+            peer = raw_peer
+        raw_peer_files = folder.get("peer_files")
+        if isinstance(raw_peer_files, dict):
+            for name, payload in raw_peer_files.items():
+                if isinstance(name, str) and isinstance(payload, dict) and is_syncable_name(name):
+                    peer_files[name] = payload
     if isinstance(raw, dict):
         for name, digest in raw.items():
             if isinstance(name, str) and isinstance(digest, str) and is_syncable_name(name):
                 files[name] = digest
-    return SyncState(path, key, files, synced_at)
+    return SyncState(path, key, files, synced_at, peer, peer_files)
+
+
+def _encode_peer_files(peer_files: dict) -> dict:
+    encoded = {}
+    for name, entry in peer_files.items():
+        if not isinstance(name, str) or not is_syncable_name(name):
+            continue
+        if hasattr(entry, "to_json"):
+            encoded[name] = entry.to_json()
+            continue
+        if not isinstance(entry, dict):
+            continue
+        try:
+            encoded[name] = {
+                "sha256": str(entry["sha256"]),
+                "size": int(entry["size"]),
+                "mtime": float(entry["mtime"]),
+            }
+        except (KeyError, TypeError, ValueError):
+            continue
+    return encoded
 
 
 def _read_document(path: Path) -> dict:

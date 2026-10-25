@@ -32,6 +32,8 @@ STATUS_LABELS = {
     "mixed": "↕ Mixed",
     "delete": "Delete",
     "unknown": "–",
+    "online": "Online",
+    "excluded": "Excluded",
 }
 
 
@@ -47,6 +49,9 @@ class CharacterRow:
     status: str
     status_label: str
     kind: str
+    name: str = ""
+    included: bool = True
+    include_locked: bool = False
 
 
 @dataclass(frozen=True)
@@ -130,6 +135,21 @@ def format_when(mtime: float | None, now: datetime) -> str:
     return f"{moment.day} {_MONTHS[moment.month - 1]} {clock}"
 
 
+def format_inline_status(
+    *,
+    peer: str,
+    synced_at: float | None,
+    now: datetime,
+    summary: str,
+    dry_run: bool = False,
+) -> str:
+    """One line for the Sync screen after a run: who, when, and the counts."""
+    when = format_when(synced_at, now) if synced_at is not None else format_when(now.timestamp(), now)
+    verb = "Dry run with" if dry_run else "Synced with"
+    who = peer or "the other machine"
+    return f"{verb} {who} · {when}. {summary}"
+
+
 def format_footer(synced_at: float | None, now: datetime, peer: str = "") -> str:
     if synced_at is None:
         when = "never"
@@ -157,6 +177,8 @@ def build_rows(
     local_d2s: dict[str, bytes],
     remote_d2s: dict[str, bytes],
     now: datetime,
+    excluded: tuple[str, ...] = (),
+    choices: tuple[tuple[str, bool], ...] = (),
 ) -> list[CharacterRow]:
     by_file = {item.rel: item for item in decisions} if decisions is not None else {}
     groups: dict[tuple[str, str], list[str]] = {}
@@ -172,6 +194,7 @@ def build_rows(
         status = _group_status(names, by_file, compared=decisions is not None)
         info = _info_for(names, local_d2s, remote_d2s, prefer_remote=False)
         title, subtitle, detail = _labels(group_id, kind, names, info)
+        row_name = group_id if kind == "character" else ""
         rows.append(
             CharacterRow(
                 title=title,
@@ -184,8 +207,11 @@ def build_rows(
                 status=status,
                 status_label=STATUS_LABELS[status],
                 kind=kind,
+                name=row_name,
             )
         )
+    rows.extend(_choice_rows(rows, choices, excluded))
+    _apply_exclude_flags(rows, excluded, choices)
     rows.sort(key=lambda row: (0 if row.kind == "character" else 1, row.title.casefold()))
     return rows
 
@@ -462,6 +488,66 @@ def user_error(exc: BaseException) -> str:
     ):
         return MISSING_SAVE_FOLDER
     return text
+
+
+def _choice_rows(rows, choices, excluded) -> list[CharacterRow]:
+    """Characters the folder knows about that the file table did not already list."""
+    present = {row.name.casefold() for row in rows if row.name}
+    excluded_keys = {name.casefold() for name in excluded}
+    extra: list[CharacterRow] = []
+    for name, online in choices:
+        if not name or name.casefold() in present:
+            continue
+        locked = bool(online)
+        skipped = locked or name.casefold() in excluded_keys
+        status = "online" if locked else "excluded" if skipped else "unknown"
+        extra.append(
+            CharacterRow(
+                title=name,
+                subtitle="Online" if locked else "Character",
+                detail="",
+                local_time="—",
+                remote_time="—",
+                local_newer=False,
+                remote_newer=False,
+                status=status,
+                status_label=STATUS_LABELS[status],
+                kind="character",
+                name=name,
+                included=not skipped,
+                include_locked=locked,
+            )
+        )
+        present.add(name.casefold())
+    return extra
+
+
+def _apply_exclude_flags(rows: list[CharacterRow], excluded, choices) -> None:
+    excluded_keys = {name.casefold() for name in excluded}
+    online_keys = {name.casefold() for name, online in choices if online}
+    for index, row in enumerate(rows):
+        if row.kind != "character" or not row.name:
+            continue
+        locked = row.include_locked or row.name.casefold() in online_keys
+        skipped = locked or row.name.casefold() in excluded_keys
+        if not skipped and not locked:
+            continue
+        status = "online" if locked else "excluded"
+        rows[index] = CharacterRow(
+            title=row.title,
+            subtitle="Online" if locked else row.subtitle,
+            detail=row.detail,
+            local_time=row.local_time,
+            remote_time=row.remote_time,
+            local_newer=False,
+            remote_newer=False,
+            status=status,
+            status_label=STATUS_LABELS[status],
+            kind=row.kind,
+            name=row.name,
+            included=False,
+            include_locked=locked,
+        )
 
 
 def _representative_mtime(names, local_files, remote_files) -> tuple[float | None, float | None]:

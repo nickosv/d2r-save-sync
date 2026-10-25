@@ -1,8 +1,10 @@
 """Decide per file whether to copy, delete, or treat the pair as a conflict.
 
-Content hashes are the source of truth. Modification time is only used
-later, by the conflict policy, to pick a preferred copy. Sync state stores
-the hash both sides agreed on last time, which is how a one-sided edit is
+Content hashes are the source of truth. Modification time picks a winner
+when both copies changed, and it is also copied when the bytes already
+match, so a file left behind with an older timestamp catches up. A gap of
+`MTIME_TIE_SECONDS` or less is not a difference. Sync state stores the hash
+both sides agreed on last time, which is how a one-sided edit is
 distinguished from both sides editing the same file.
 """
 
@@ -49,6 +51,25 @@ def plan_file(
         return _decision(rel, "none", "absent", "no file on either side", local, remote)
 
     if local is not None and remote is not None and local.sha256 == remote.sha256:
+        side = preferred_side(local, remote)
+        if side == "local":
+            return _decision(
+                rel,
+                "push",
+                "mtime",
+                "same contents; this copy was modified later",
+                local,
+                remote,
+            )
+        if side == "remote":
+            return _decision(
+                rel,
+                "pull",
+                "mtime",
+                "same contents; the other copy was modified later",
+                local,
+                remote,
+            )
         return _decision(rel, "none", "match", "contents match", local, remote)
 
     if local is not None and remote is None:
